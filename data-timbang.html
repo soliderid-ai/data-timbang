@@ -275,10 +275,17 @@ function refreshReadyState(){
    KAMERA + SCAN QR
    ============================================================ */
 const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
+const canvas = document.getElementById('canvas');       // canvas resolusi penuh, untuk hasil foto
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 const flashEl = document.getElementById('flash');
 const scanHint = document.getElementById('scan-hint');
+
+// canvas kecil khusus untuk pemindaian QR — jauh lebih ringan/cepat
+// daripada memindai di resolusi penuh setiap frame.
+const SCAN_MAX_WIDTH = 480;
+const scanCanvas = document.createElement('canvas');
+const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+let scanScaleReady = false;
 
 let stream = null;
 let scanning = false;
@@ -286,12 +293,38 @@ let rafId = null;
 let lastCode = null;
 let lastCodeTime = 0;
 let reviewOpen = false;
-let pendingBlob = null;
+let pendingBlobPromise = null;
+let audioCtx = null;
 
 document.getElementById('btn-start').addEventListener('click', startCamera);
 document.getElementById('btn-stop').addEventListener('click', stopCamera);
 
+function ensureAudio(){
+  if(audioCtx) return;
+  try{
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }catch(e){ /* browser tidak mendukung, abaikan */ }
+}
+
+function playBeep(){
+  if(!audioCtx) return;
+  try{
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 1046; // nada "ting" pendek
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.25, audioCtx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.14);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.15);
+  }catch(e){ /* abaikan kalau gagal, tidak fatal */ }
+}
+
 async function startCamera(){
+  ensureAudio(); // dibuat saat ini juga (dipicu oleh tap pengguna) supaya suara diizinkan browser
   try{
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width:{ideal:1280}, height:{ideal:1280} },
@@ -299,6 +332,7 @@ async function startCamera(){
     });
     video.srcObject = stream;
     await video.play();
+    scanScaleReady = false;
     scanning = true;
     document.getElementById('btn-start').style.display='none';
     document.getElementById('btn-stop').style.display='inline-block';
@@ -321,11 +355,15 @@ function stopCamera(){
 function tick(){
   if(!scanning) return;
   if(video.readyState === video.HAVE_ENOUGH_DATA){
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    if(!reviewOpen){
-      const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+    if(!scanScaleReady && video.videoWidth){
+      const scale = Math.min(1, SCAN_MAX_WIDTH / video.videoWidth);
+      scanCanvas.width = Math.round(video.videoWidth * scale);
+      scanCanvas.height = Math.round(video.videoHeight * scale);
+      scanScaleReady = true;
+    }
+    if(!reviewOpen && scanScaleReady){
+      scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
+      const imgData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
       const result = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
       if(result && result.data){
         handleDetectedCode(result.data);
@@ -342,9 +380,35 @@ function handleDetectedCode(text){
   lastCodeTime = now;
 
   triggerFlash();
-  canvas.toBlob((blob) => {
-    openReview(text, blob);
-  }, 'image/jpeg', 0.9);
+  playBeep();
+  captureFullFrame(text);
+}
+
+function captureFullFrame(qrText){
+  // ambil frame resolusi penuh — hanya operasi gambar, cepat (tidak menunggu kompresi)
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  // preview kecil untuk ditampilkan instan di panel review
+  const thumbUrl = buildThumbDataUrl(canvas, 160);
+
+  // kompresi JPEG penuh dikerjakan di belakang layar (tidak menghalangi tampilan review)
+  pendingBlobPromise = new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.85);
+  });
+
+  openReview(qrText, thumbUrl);
+}
+
+function buildThumbDataUrl(sourceCanvas, targetWidth){
+  const scale = targetWidth / sourceCanvas.width;
+  const w = targetWidth;
+  const h = Math.round(sourceCanvas.height * scale);
+  const t = document.createElement('canvas');
+  t.width = w; t.height = h;
+  t.getContext('2d').drawImage(sourceCanvas, 0, 0, w, h);
+  return t.toDataURL('image/jpeg', 0.7);
 }
 
 function triggerFlash(){
@@ -360,21 +424,20 @@ const reviewCard = document.getElementById('review-card');
 const reviewThumb = document.getElementById('review-thumb');
 
 document.getElementById('btn-manual').addEventListener('click', () => {
+  pendingBlobPromise = null;
   openReview('', null);
 });
 
-function openReview(qrText, blob){
+function openReview(qrText, thumbUrl){
   reviewOpen = true;
-  pendingBlob = blob;
 
   document.getElementById('review-qrtext').value = qrText || '';
   document.getElementById('review-koli').value = '';
   document.getElementById('review-kilo').value = '';
   document.getElementById('review-big').checked = false;
 
-  if(blob){
-    const url = URL.createObjectURL(blob);
-    reviewThumb.src = url;
+  if(thumbUrl){
+    reviewThumb.src = thumbUrl;
     reviewThumb.style.display = 'block';
   } else {
     reviewThumb.style.display = 'none';
@@ -388,9 +451,8 @@ function openReview(qrText, blob){
 
 function closeReview(){
   reviewOpen = false;
-  pendingBlob = null;
+  pendingBlobPromise = null;
   reviewCard.style.display = 'none';
-  if(reviewThumb.src) URL.revokeObjectURL(reviewThumb.src);
   reviewThumb.removeAttribute('src');
   reviewThumb.style.display = 'none';
   scanHint.textContent = scanning ? 'Kamera aktif — mencari QR code…' : '';
@@ -405,9 +467,9 @@ document.getElementById('review-save').addEventListener('click', async () => {
   const koli = document.getElementById('review-koli').value.trim();
   const kilo = document.getElementById('review-kilo').value.trim();
   const big = document.getElementById('review-big').checked;
-  const blob = pendingBlob;
+  const blobPromise = pendingBlobPromise;
 
-  if(!qrText && !koli && !kilo && !blob){
+  if(!qrText && !koli && !kilo && !blobPromise){
     setStatus('Isi minimal salah satu data dulu', true);
     return;
   }
@@ -421,7 +483,10 @@ document.getElementById('review-save').addEventListener('click', async () => {
 
   try{
     const payload = { action: 'create', qrText: qrText, koli: koli, kilo: kilo, big: big };
-    if(blob){ payload.image = await blobToBase64(blob); }
+    if(blobPromise){
+      const blob = await blobPromise;
+      if(blob){ payload.image = await blobToBase64(blob); }
+    }
     const data = await sendToAppsScript(payload);
     updateLogEntry(entryId, 'up', 'Tersimpan');
     refreshSummary();
