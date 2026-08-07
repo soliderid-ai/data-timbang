@@ -99,6 +99,14 @@
   .summary-box .value{font-family:var(--mono);font-size:15px;font-weight:600;}
   .summary-box.total{grid-column:1 / -1;background:#f2f5f1;}
   .summary-box.big .label{color:var(--big);}
+
+  #saved-list{list-style:none;margin:0;padding:0;}
+  #saved-list li{padding:9px 0;border-bottom:1px solid var(--line);}
+  #saved-list li:last-child{border-bottom:none;}
+  .saved-row{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
+  .btn-danger{background:#f6e6dd;color:var(--warn);padding:6px 10px;font-size:12.5px;}
+  .btn-danger:disabled{opacity:0.5;cursor:not-allowed;}
+  .saved-link{font-size:12px;}
 </style>
 </head>
 <body>
@@ -187,6 +195,16 @@
     <div id="summary-body">
       <p class="hint">Atur URL Apps Script dulu untuk melihat ringkasan.</p>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:6px;">
+      <strong style="font-size:13px;">Data Tersimpan (bisa dihapus)</strong>
+      <button class="btn-secondary" id="btn-refresh-saved">Refresh</button>
+    </div>
+    <p class="hint" style="margin-bottom:8px;">Menampilkan data pada tanggal yang dipilih di atas. Menghapus di sini akan menghapus baris di Sheet dan foto di Drive secara permanen.</p>
+    <ul id="saved-list"></ul>
+    <p class="hint" id="saved-empty">Belum ada data untuk tanggal ini.</p>
   </div>
 
   <div class="card">
@@ -402,11 +420,12 @@ document.getElementById('review-save').addEventListener('click', async () => {
   closeReview();
 
   try{
-    const payload = { qrText: qrText, koli: koli, kilo: kilo, big: big };
+    const payload = { action: 'create', qrText: qrText, koli: koli, kilo: kilo, big: big };
     if(blob){ payload.image = await blobToBase64(blob); }
     const data = await sendToAppsScript(payload);
     updateLogEntry(entryId, 'up', 'Tersimpan');
     refreshSummary();
+    loadSavedList();
   }catch(err){
     updateLogEntry(entryId, 'fail', err.message || 'Gagal mengirim');
   }
@@ -498,8 +517,13 @@ const summaryBody = document.getElementById('summary-body');
 document.getElementById('btn-refresh-summary').addEventListener('click', () => {
   loadDatesList();
   refreshSummary();
+  loadSavedList();
 });
-summaryDateSel.addEventListener('change', refreshSummary);
+document.getElementById('btn-refresh-saved').addEventListener('click', loadSavedList);
+summaryDateSel.addEventListener('change', () => {
+  refreshSummary();
+  loadSavedList();
+});
 
 function todayStr(){
   // format YYYY-MM-DD berbasis waktu lokal perangkat
@@ -595,6 +619,102 @@ function renderSummary(data){
 if(cfg.scriptUrl){
   loadDatesList();
   refreshSummary();
+  loadSavedList();
+}
+
+/* ============================================================
+   DATA TERSIMPAN — lihat & hapus (tersambung ke Sheet + Drive)
+   ============================================================ */
+const savedList = document.getElementById('saved-list');
+const savedEmpty = document.getElementById('saved-empty');
+
+async function loadSavedList(){
+  if(!cfg.scriptUrl){
+    savedList.innerHTML = '';
+    savedEmpty.style.display = 'block';
+    savedEmpty.textContent = 'Atur URL Apps Script dulu.';
+    return;
+  }
+  const date = summaryDateSel.value || todayStr();
+  savedList.innerHTML = '';
+  savedEmpty.style.display = 'block';
+  savedEmpty.textContent = 'Memuat…';
+  try{
+    const res = await fetch(cfg.scriptUrl + '?action=list&date=' + encodeURIComponent(date));
+    const data = await res.json();
+    if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat data'); }
+    renderSavedList(data.items || []);
+  }catch(err){
+    savedEmpty.textContent = 'Gagal memuat: ' + err.message;
+  }
+}
+
+function renderSavedList(items){
+  savedList.innerHTML = '';
+  if(!items.length){
+    savedEmpty.style.display = 'block';
+    savedEmpty.textContent = 'Belum ada data untuk tanggal ini.';
+    return;
+  }
+  savedEmpty.style.display = 'none';
+
+  items.forEach(item => {
+    const li = document.createElement('li');
+    li.dataset.id = item.id;
+
+    const label = item.qrText ? item.qrText : '(input manual)';
+    const detailParts = [];
+    if(item.koli) detailParts.push('Koli: ' + item.koli);
+    if(item.kilo) detailParts.push('Kilo: ' + item.kilo);
+    const detailStr = detailParts.length ? detailParts.join(' · ') : 'tanpa angka';
+    const isBig = (item.kategori || '').toString().toUpperCase() === 'BIG';
+
+    li.innerHTML = `
+      <div class="saved-row">
+        <div>
+          <div class="code">${escapeHtml(label)}</div>
+          <div class="meta">${escapeHtml(item.timestamp || '')} · ${escapeHtml(detailStr)} ${isBig ? '· <b style="color:var(--big)">BIG</b>' : ''}</div>
+          ${item.fileUrl ? `<a class="saved-link" href="${item.fileUrl}" target="_blank" rel="noopener">Lihat foto</a>` : ''}
+        </div>
+        <button class="btn-danger" data-role="delete-btn">Hapus</button>
+      </div>
+    `;
+    li.querySelector('[data-role="delete-btn"]').addEventListener('click', () => {
+      confirmAndDelete(item.id, li);
+    });
+    savedList.appendChild(li);
+  });
+}
+
+function confirmAndDelete(id, li){
+  const ok = window.confirm('Hapus data ini? Foto di Drive juga akan dihapus. Tindakan ini tidak bisa dibatalkan.');
+  if(!ok) return;
+  deleteEntry(id, li);
+}
+
+async function deleteEntry(id, li){
+  const btn = li.querySelector('[data-role="delete-btn"]');
+  btn.disabled = true;
+  btn.textContent = 'Menghapus…';
+  try{
+    const res = await fetch(cfg.scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'delete', id: id })
+    });
+    const data = await res.json();
+    if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal menghapus'); }
+    li.remove();
+    if(!savedList.children.length){
+      savedEmpty.style.display = 'block';
+      savedEmpty.textContent = 'Belum ada data untuk tanggal ini.';
+    }
+    refreshSummary();
+  }catch(err){
+    btn.disabled = false;
+    btn.textContent = 'Hapus';
+    alert('Gagal menghapus: ' + err.message);
+  }
 }
 </script>
 
