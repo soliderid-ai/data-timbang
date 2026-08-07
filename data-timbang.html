@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DATA TIMBANG</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+<style>
+  :root{
+    --ink:#1b2430;
+    --paper:#f6f7f5;
+    --line:#d8dcd6;
+    --accent:#2f6f4f;
+    --accent-dark:#204d37;
+    --big:#a6431f;
+    --warn:#b3541e;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--paper);
+    color:var(--ink);
+  }
+  header{
+    padding:16px 18px 10px;
+    border-bottom:1px solid var(--line);
+    background:#fff;
+    position:sticky;top:0;z-index:5;
+  }
+  header h1{margin:0;font-size:17px;letter-spacing:0.2px;}
+  header p{margin:4px 0 0;font-size:12.5px;color:#5b6570;}
+  #status-pill{
+    display:inline-block;margin-top:8px;font-size:11.5px;padding:3px 9px;
+    border-radius:20px;background:#eee;color:#555;font-family:var(--mono);
+  }
+  #status-pill.ok{background:#e4f2e9;color:var(--accent-dark);}
+  #status-pill.err{background:#f6e6dd;color:var(--warn);}
+
+  main{max-width:520px;margin:0 auto;padding:14px;}
+
+  .card{
+    background:#fff;border:1px solid var(--line);border-radius:10px;
+    padding:14px;margin-bottom:12px;
+  }
+
+  #video-wrap{
+    position:relative;width:100%;aspect-ratio:3/4;background:#111;
+    border-radius:10px;overflow:hidden;
+  }
+  video{width:100%;height:100%;object-fit:cover;display:block;}
+  #reticle{position:absolute;inset:14%;border:2px solid rgba(255,255,255,0.55);border-radius:12px;pointer-events:none;}
+  #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;}
+  #flash.on{animation:flashfx 260ms ease-out;}
+  @keyframes flashfx{0%{opacity:.85;}100%{opacity:0;}}
+
+  button{font:inherit;border:none;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:600;font-size:14px;}
+  .btn-primary{background:var(--accent);color:#fff;}
+  .btn-primary:disabled{background:#a9c4b3;cursor:not-allowed;}
+  .btn-secondary{background:#eceee9;color:var(--ink);}
+  .btn-block{width:100%;}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+
+  label{font-size:12.5px;color:#555;display:block;margin-bottom:4px;}
+  input[type=text],input[type=number]{
+    width:100%;padding:9px;border:1px solid var(--line);border-radius:7px;
+    font-family:var(--mono);font-size:14px;background:#fbfbfa;
+  }
+  select{
+    width:100%;padding:8px 9px;border:1px solid var(--line);border-radius:7px;
+    font-size:14px;background:#fbfbfa;color:var(--ink);
+  }
+  .field{margin-bottom:10px;}
+  .field.grow{flex:1;min-width:110px;}
+
+  #log{list-style:none;margin:0;padding:0;}
+  #log li{display:block;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;}
+  #log li:last-child{border-bottom:none;}
+  .log-top{display:flex;justify-content:space-between;gap:8px;}
+  .code{font-family:var(--mono);font-weight:600;word-break:break-all;}
+  .meta{font-size:11px;color:#5b6570;margin-top:2px;}
+  .tag{font-size:11px;padding:2px 7px;border-radius:20px;white-space:nowrap;height:fit-content;}
+  .tag.up{background:#e4f2e9;color:var(--accent-dark);}
+  .tag.pending{background:#f2eee0;color:#8a6d1f;}
+  .tag.fail{background:#f6e6dd;color:var(--warn);}
+  .tag.big{background:#f7e6dd;color:var(--big);}
+
+  details summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--accent-dark);}
+  .hint{font-size:12px;color:#5b6570;line-height:1.5;}
+
+  #review-card{display:none;border:2px solid var(--accent);}
+  #review-thumb{width:84px;height:112px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:none;}
+  .checkbox-row{display:flex;align-items:center;gap:8px;font-size:14px;margin:10px 0;}
+  .checkbox-row input{width:18px;height:18px;}
+
+  .summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;}
+  .summary-box{border:1px solid var(--line);border-radius:8px;padding:10px;}
+  .summary-box .label{font-size:11.5px;color:#5b6570;margin-bottom:4px;}
+  .summary-box .value{font-family:var(--mono);font-size:15px;font-weight:600;}
+  .summary-box.total{grid-column:1 / -1;background:#f2f5f1;}
+  .summary-box.big .label{color:var(--big);}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>DATA TIMBANG</h1>
+  <p>Scan QR atau input manual: koli, kilo, kategori BIG — tersimpan ke Drive + Sheet.</p>
+  <span id="status-pill">Belum diatur</span>
+</header>
+
+<main>
+
+  <div class="card">
+    <details id="setup-details">
+      <summary>Pengaturan (isi sekali saja)</summary>
+      <div style="margin-top:10px;">
+        <div class="field">
+          <label>URL Web App Apps Script</label>
+          <input type="text" id="cfg-script-url" placeholder="https://script.google.com/macros/s/xxxx/exec">
+        </div>
+        <div class="row">
+          <button class="btn-secondary" id="save-cfg">Simpan pengaturan</button>
+        </div>
+        <p class="hint">Tempel URL "Web app" hasil Deploy dari Apps Script. Disimpan di browser perangkat ini saja (localStorage). Aplikasi ini tidak butuh login — semua data langsung tersambung ke Drive &amp; Sheet yang sama untuk semua pengguna.</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="card">
+    <div id="video-wrap">
+      <video id="video" playsinline muted></video>
+      <div id="reticle"></div>
+      <div id="flash"></div>
+    </div>
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <div class="row" style="margin-top:10px;">
+      <button class="btn-primary" id="btn-start" disabled>Mulai Kamera</button>
+      <button class="btn-secondary" id="btn-stop" style="display:none;">Hentikan Kamera</button>
+      <button class="btn-secondary" id="btn-manual" disabled>+ Input Manual</button>
+    </div>
+    <p class="hint" id="scan-hint" style="margin-top:8px;"></p>
+  </div>
+
+  <div class="card" id="review-card">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+      <strong style="font-size:13px;">Data Baru — periksa sebelum Simpan</strong>
+    </div>
+    <div class="row" style="align-items:flex-start;">
+      <img id="review-thumb" alt="foto">
+      <div style="flex:1;min-width:150px;">
+        <div class="field">
+          <label>Isi QR Code (kosong = input manual)</label>
+          <input type="text" id="review-qrtext" placeholder="tidak ada QR">
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field grow">
+        <label>Koli</label>
+        <input type="number" id="review-koli" inputmode="numeric" placeholder="0">
+      </div>
+      <div class="field grow">
+        <label>Kilo</label>
+        <input type="number" id="review-kilo" inputmode="decimal" step="0.01" placeholder="0.0">
+      </div>
+    </div>
+    <label class="checkbox-row">
+      <input type="checkbox" id="review-big"> Kategori BIG
+    </label>
+    <div class="row">
+      <button class="btn-primary" id="review-save">Simpan</button>
+      <button class="btn-secondary" id="review-discard">Buang</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:6px;">
+      <strong style="font-size:13px;">Ringkasan Harian</strong>
+      <button class="btn-secondary" id="btn-refresh-summary">Refresh</button>
+    </div>
+    <div class="field">
+      <label>Tanggal</label>
+      <select id="summary-date"></select>
+    </div>
+    <div id="summary-body">
+      <p class="hint">Atur URL Apps Script dulu untuk melihat ringkasan.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:6px;">
+      <strong style="font-size:13px;">Riwayat scan</strong>
+    </div>
+    <ul id="log"></ul>
+    <p class="hint" id="log-empty">Belum ada yang discan.</p>
+  </div>
+
+</main>
+
+<script>
+/* ============================================================
+   STATUS UI
+   ============================================================ */
+const pill = document.getElementById('status-pill');
+function setStatus(text, isError){
+  pill.textContent = text;
+  pill.classList.remove('ok','err');
+  pill.classList.add(isError ? 'err' : 'ok');
+}
+
+/* ============================================================
+   KONFIGURASI DASAR
+   ============================================================ */
+const REPEAT_COOLDOWN_MS = 4000;
+
+let cfg = {
+  scriptUrl: localStorage.getItem('dt_script_url') || ''
+};
+
+document.getElementById('cfg-script-url').value = cfg.scriptUrl;
+refreshReadyState();
+
+document.getElementById('save-cfg').addEventListener('click', () => {
+  try{
+    const val = document.getElementById('cfg-script-url').value.trim();
+    if(!val){ setStatus('Isi dulu URL-nya', true); return; }
+    if(!val.startsWith('https://script.google.com/')){
+      setStatus('URL sepertinya bukan URL Apps Script', true); return;
+    }
+    cfg.scriptUrl = val;
+    localStorage.setItem('dt_script_url', cfg.scriptUrl);
+    refreshReadyState();
+    loadDatesList();
+    refreshSummary();
+  }catch(err){
+    setStatus('Gagal simpan: ' + err.message, true);
+  }
+});
+
+function refreshReadyState(){
+  if(cfg.scriptUrl){
+    document.getElementById('setup-details').open = false;
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-manual').disabled = false;
+    setStatus('Siap dipakai ✓', false);
+  } else {
+    document.getElementById('setup-details').open = true;
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-manual').disabled = true;
+    setStatus('Belum diatur', true);
+  }
+}
+
+/* ============================================================
+   KAMERA + SCAN QR
+   ============================================================ */
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+const flashEl = document.getElementById('flash');
+const scanHint = document.getElementById('scan-hint');
+
+let stream = null;
+let scanning = false;
+let rafId = null;
+let lastCode = null;
+let lastCodeTime = 0;
+let reviewOpen = false;
+let pendingBlob = null;
+
+document.getElementById('btn-start').addEventListener('click', startCamera);
+document.getElementById('btn-stop').addEventListener('click', stopCamera);
+
+async function startCamera(){
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width:{ideal:1280}, height:{ideal:1280} },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    scanning = true;
+    document.getElementById('btn-start').style.display='none';
+    document.getElementById('btn-stop').style.display='inline-block';
+    scanHint.textContent = 'Kamera aktif — mencari QR code…';
+    tick();
+  }catch(err){
+    setStatus('Tidak bisa akses kamera: ' + err.message, true);
+  }
+}
+
+function stopCamera(){
+  scanning = false;
+  if(rafId) cancelAnimationFrame(rafId);
+  if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  document.getElementById('btn-start').style.display='inline-block';
+  document.getElementById('btn-stop').style.display='none';
+  scanHint.textContent = '';
+}
+
+function tick(){
+  if(!scanning) return;
+  if(video.readyState === video.HAVE_ENOUGH_DATA){
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if(!reviewOpen){
+      const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+      const result = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
+      if(result && result.data){
+        handleDetectedCode(result.data);
+      }
+    }
+  }
+  rafId = requestAnimationFrame(tick);
+}
+
+function handleDetectedCode(text){
+  const now = Date.now();
+  if(text === lastCode && (now - lastCodeTime) < REPEAT_COOLDOWN_MS) return;
+  lastCode = text;
+  lastCodeTime = now;
+
+  triggerFlash();
+  canvas.toBlob((blob) => {
+    openReview(text, blob);
+  }, 'image/jpeg', 0.9);
+}
+
+function triggerFlash(){
+  flashEl.classList.remove('on');
+  void flashEl.offsetWidth;
+  flashEl.classList.add('on');
+}
+
+/* ============================================================
+   PANEL REVIEW (Simpan / Buang)
+   ============================================================ */
+const reviewCard = document.getElementById('review-card');
+const reviewThumb = document.getElementById('review-thumb');
+
+document.getElementById('btn-manual').addEventListener('click', () => {
+  openReview('', null);
+});
+
+function openReview(qrText, blob){
+  reviewOpen = true;
+  pendingBlob = blob;
+
+  document.getElementById('review-qrtext').value = qrText || '';
+  document.getElementById('review-koli').value = '';
+  document.getElementById('review-kilo').value = '';
+  document.getElementById('review-big').checked = false;
+
+  if(blob){
+    const url = URL.createObjectURL(blob);
+    reviewThumb.src = url;
+    reviewThumb.style.display = 'block';
+  } else {
+    reviewThumb.style.display = 'none';
+    reviewThumb.removeAttribute('src');
+  }
+
+  reviewCard.style.display = 'block';
+  reviewCard.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  scanHint.textContent = 'Periksa data di bawah, lalu Simpan atau Buang.';
+}
+
+function closeReview(){
+  reviewOpen = false;
+  pendingBlob = null;
+  reviewCard.style.display = 'none';
+  if(reviewThumb.src) URL.revokeObjectURL(reviewThumb.src);
+  reviewThumb.removeAttribute('src');
+  reviewThumb.style.display = 'none';
+  scanHint.textContent = scanning ? 'Kamera aktif — mencari QR code…' : '';
+}
+
+document.getElementById('review-discard').addEventListener('click', () => {
+  closeReview();
+});
+
+document.getElementById('review-save').addEventListener('click', async () => {
+  const qrText = document.getElementById('review-qrtext').value.trim();
+  const koli = document.getElementById('review-koli').value.trim();
+  const kilo = document.getElementById('review-kilo').value.trim();
+  const big = document.getElementById('review-big').checked;
+  const blob = pendingBlob;
+
+  if(!qrText && !koli && !kilo && !blob){
+    setStatus('Isi minimal salah satu data dulu', true);
+    return;
+  }
+  if(!cfg.scriptUrl){
+    setStatus('URL Apps Script belum diatur', true);
+    return;
+  }
+
+  const entryId = addLogEntry(qrText, koli, kilo, big, 'pending');
+  closeReview();
+
+  try{
+    const payload = { qrText: qrText, koli: koli, kilo: kilo, big: big };
+    if(blob){ payload.image = await blobToBase64(blob); }
+    const data = await sendToAppsScript(payload);
+    updateLogEntry(entryId, 'up', 'Tersimpan');
+    refreshSummary();
+  }catch(err){
+    updateLogEntry(entryId, 'fail', err.message || 'Gagal mengirim');
+  }
+});
+
+function blobToBase64(blob){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function sendToAppsScript(payload){
+  const res = await fetch(cfg.scriptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload)
+  });
+  if(!res.ok){ throw new Error('Server merespons status ' + res.status); }
+  const data = await res.json();
+  if(data.status !== 'ok'){ throw new Error(data.message || 'Apps Script melaporkan gagal'); }
+  return data;
+}
+
+/* ============================================================
+   RIWAYAT / LOG
+   ============================================================ */
+const logList = document.getElementById('log');
+const logEmpty = document.getElementById('log-empty');
+let logCounter = 0;
+
+function addLogEntry(qrText, koli, kilo, big, state){
+  logEmpty.style.display = 'none';
+  const id = 'log-' + (++logCounter);
+  const li = document.createElement('li');
+  li.id = id;
+  const time = new Date().toLocaleTimeString('id-ID');
+  const label = qrText ? qrText : '(input manual)';
+  const detailParts = [];
+  if(koli) detailParts.push('Koli: ' + koli);
+  if(kilo) detailParts.push('Kilo: ' + kilo);
+  const detailStr = detailParts.length ? detailParts.join(' · ') : 'tanpa angka';
+
+  li.innerHTML = `
+    <div class="log-top">
+      <div>
+        <div class="code">${escapeHtml(label)}</div>
+        <div class="meta">${time} · ${escapeHtml(detailStr)}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
+        ${big ? '<span class="tag big">BIG</span>' : ''}
+        <span class="tag ${stateClass(state)}" data-role="state">${stateLabel(state)}</span>
+      </div>
+    </div>
+  `;
+  logList.prepend(li);
+  return id;
+}
+
+function updateLogEntry(id, state, detail){
+  const li = document.getElementById(id);
+  if(!li) return;
+  const tag = li.querySelector('[data-role="state"]');
+  tag.className = 'tag ' + stateClass(state);
+  tag.textContent = stateLabel(state);
+  if(detail && state === 'fail'){
+    const meta = li.querySelector('.meta');
+    meta.textContent += ' · ' + detail;
+  }
+}
+
+function stateClass(s){ return s === 'up' ? 'up' : (s === 'fail' ? 'fail' : 'pending'); }
+function stateLabel(s){ return s === 'up' ? 'Tersimpan' : (s === 'fail' ? 'Gagal' : 'Mengirim…'); }
+
+function escapeHtml(str){
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+/* ============================================================
+   RINGKASAN HARIAN
+   ============================================================ */
+const summaryDateSel = document.getElementById('summary-date');
+const summaryBody = document.getElementById('summary-body');
+
+document.getElementById('btn-refresh-summary').addEventListener('click', () => {
+  loadDatesList();
+  refreshSummary();
+});
+summaryDateSel.addEventListener('change', refreshSummary);
+
+function todayStr(){
+  // format YYYY-MM-DD berbasis waktu lokal perangkat
+  const d = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
+}
+
+function ensureTodayOption(){
+  const t = todayStr();
+  if(![...summaryDateSel.options].some(o => o.value === t)){
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t + ' (hari ini)';
+    summaryDateSel.prepend(opt);
+    summaryDateSel.value = t;
+  }
+}
+ensureTodayOption();
+
+async function loadDatesList(){
+  if(!cfg.scriptUrl) return;
+  try{
+    const res = await fetch(cfg.scriptUrl + '?action=dates');
+    const data = await res.json();
+    if(data.status === 'ok' && Array.isArray(data.dates)){
+      const current = summaryDateSel.value || todayStr();
+      summaryDateSel.innerHTML = '';
+      data.dates.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d;
+        opt.textContent = (d === todayStr()) ? d + ' (hari ini)' : d;
+        summaryDateSel.appendChild(opt);
+      });
+      if([...summaryDateSel.options].some(o => o.value === current)){
+        summaryDateSel.value = current;
+      }
+    }
+  }catch(err){
+    // biarkan, tanggal hari ini tetap tersedia dari ensureTodayOption
+  }
+}
+
+async function refreshSummary(){
+  if(!cfg.scriptUrl){
+    summaryBody.innerHTML = '<p class="hint">Atur URL Apps Script dulu untuk melihat ringkasan.</p>';
+    return;
+  }
+  const date = summaryDateSel.value || todayStr();
+  summaryBody.innerHTML = '<p class="hint">Memuat…</p>';
+  try{
+    const res = await fetch(cfg.scriptUrl + '?action=summary&date=' + encodeURIComponent(date));
+    const data = await res.json();
+    if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat ringkasan'); }
+    renderSummary(data);
+  }catch(err){
+    summaryBody.innerHTML = '<p class="hint">Gagal memuat ringkasan: ' + escapeHtml(err.message) + '</p>';
+  }
+}
+
+function fmtNum(n){
+  const v = Number(n) || 0;
+  return v % 1 === 0 ? v.toString() : v.toFixed(2);
+}
+
+function renderSummary(data){
+  summaryBody.innerHTML = `
+    <div class="summary-grid">
+      <div class="summary-box">
+        <div class="label">Reguler — Koli</div>
+        <div class="value">${fmtNum(data.reguler.koli)}</div>
+      </div>
+      <div class="summary-box">
+        <div class="label">Reguler — Kilo</div>
+        <div class="value">${fmtNum(data.reguler.kilo)} kg</div>
+      </div>
+      <div class="summary-box big">
+        <div class="label">BIG — Koli</div>
+        <div class="value">${fmtNum(data.big.koli)}</div>
+      </div>
+      <div class="summary-box big">
+        <div class="label">BIG — Kilo</div>
+        <div class="value">${fmtNum(data.big.kilo)} kg</div>
+      </div>
+      <div class="summary-box total">
+        <div class="label">Total Keseluruhan Hari Ini</div>
+        <div class="value">${fmtNum(data.total.koli)} koli · ${fmtNum(data.total.kilo)} kg</div>
+      </div>
+    </div>
+  `;
+}
+
+// muat data awal kalau sudah pernah diatur sebelumnya
+if(cfg.scriptUrl){
+  loadDatesList();
+  refreshSummary();
+}
+</script>
+
+</body>
+</html>
