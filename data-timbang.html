@@ -52,6 +52,7 @@
   #reticle{position:absolute;inset:14%;border:2px solid rgba(255,255,255,0.55);border-radius:12px;pointer-events:none;}
   #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;}
   #flash.on{animation:flashfx 260ms ease-out;}
+  #flash.reject{background:#c0392b;animation:flashfx 320ms ease-out;}
   @keyframes flashfx{0%{opacity:.85;}100%{opacity:0;}}
 
   button{font:inherit;border:none;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:600;font-size:14px;}
@@ -168,6 +169,7 @@
       <button class="btn-primary" id="btn-start" disabled>Mulai Kamera</button>
       <button class="btn-secondary" id="btn-stop" style="display:none;">Hentikan Kamera</button>
       <button class="btn-secondary" id="btn-manual" disabled>+ Input Manual</button>
+      <button class="btn-secondary" id="btn-manual-photo" disabled style="display:none;">Ambil Foto (tanpa QR)</button>
     </div>
     <p class="hint" id="scan-hint" style="margin-top:8px;"></p>
   </div>
@@ -223,7 +225,11 @@
       <strong style="font-size:13px;">Data Tersimpan (bisa dihapus)</strong>
       <button class="btn-secondary" id="btn-refresh-saved">Refresh</button>
     </div>
-    <p class="hint" style="margin-bottom:8px;">Menampilkan data pada tanggal yang dipilih di atas. Menghapus di sini akan menghapus baris di Sheet dan foto di Drive secara permanen.</p>
+    <div class="field">
+      <label>Tanggal</label>
+      <select id="saved-date"></select>
+    </div>
+    <p class="hint" id="saved-hint" style="margin-bottom:8px;"></p>
     <ul id="saved-list"></ul>
     <p class="hint" id="saved-empty">Belum ada data untuk tanggal ini.</p>
   </div>
@@ -322,8 +328,9 @@ document.getElementById('save-cfg').addEventListener('click', () => {
     if(cfg.mode === 'OUTBOND'){
       loadDatesList();
       refreshSummary();
-      loadSavedList();
     }
+    loadSavedDatesList();
+    loadSavedList();
   }catch(err){
     setStatus('Gagal simpan: ' + err.message, true);
   }
@@ -335,12 +342,14 @@ function refreshReadyState(){
     document.getElementById('setup-details').open = false;
     document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-manual').disabled = false;
+    document.getElementById('btn-manual-photo').disabled = false;
     setStatus('Siap dipakai ✓', false);
     ctxEl.innerHTML = '<span>Mode: <b>' + escapeHtml(cfg.mode) + '</b></span><span>· Sub-Kategori: <b>' + escapeHtml(cfg.subkategori) + '</b></span>';
   } else {
     document.getElementById('setup-details').open = true;
     document.getElementById('btn-start').disabled = true;
     document.getElementById('btn-manual').disabled = true;
+    document.getElementById('btn-manual-photo').disabled = true;
     setStatus('Belum diatur', true);
     ctxEl.innerHTML = '';
   }
@@ -348,9 +357,12 @@ function refreshReadyState(){
 
 function applyModeUI(){
   const isInbound = cfg.mode === 'INBOUND';
-  document.getElementById('btn-manual').textContent = isInbound ? 'Ambil Foto Manual (tanpa QR)' : '+ Input Manual';
+  document.getElementById('btn-manual').textContent = isInbound ? 'Ambil Foto Manual (tanpa QR)' : '+ Input Manual (tanpa foto)';
+  document.getElementById('btn-manual-photo').style.display = isInbound ? 'none' : 'inline-block';
   document.getElementById('summary-card').style.display = isInbound ? 'none' : 'block';
-  document.getElementById('saved-card').style.display = isInbound ? 'none' : 'block';
+  document.getElementById('saved-hint').textContent = isInbound
+    ? 'Menampilkan foto pada tanggal & sub-kategori (' + cfg.subkategori + ') yang aktif. Menghapus di sini akan menghapus foto di Drive secara permanen.'
+    : 'Menampilkan data pada tanggal yang dipilih. Menghapus di sini akan menghapus baris di Sheet dan foto di Drive secara permanen.';
 }
 
 /* ============================================================
@@ -405,6 +417,22 @@ function playBeep(){
   }catch(e){ /* abaikan kalau gagal, tidak fatal */ }
 }
 
+function playReject(){
+  if(!audioCtx) return;
+  try{
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 220; // nada rendah "buzz" pendek, beda dari nada sukses
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.2, audioCtx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.22);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.23);
+  }catch(e){ /* abaikan */ }
+}
 async function startCamera(){
   ensureAudio(); // dibuat saat ini juga (dipicu oleh tap pengguna) supaya suara diizinkan browser
   try{
@@ -461,14 +489,40 @@ function handleDetectedCode(text){
   lastCode = text;
   lastCodeTime = now;
 
-  triggerFlash();
-  playBeep();
-
   if(cfg.mode === 'INBOUND'){
+    triggerFlash('ok');
+    playBeep();
     captureAndSendDirect(text);
-  } else {
-    captureFullFrame(text);
+    return;
   }
+
+  // OUTBOND: cek dulu apakah QR ini sudah discan hari ini sebelum menangkap foto
+  scanHint.textContent = 'Memeriksa QR…';
+  checkDuplicateQr(text).then(exists => {
+    if(exists){
+      triggerFlash('reject');
+      playReject();
+      scanHint.textContent = 'QR ini sudah discan hari ini — ditolak. Arahkan ke QR lain.';
+      return;
+    }
+    triggerFlash('ok');
+    playBeep();
+    captureFullFrame(text);
+  }).catch(() => {
+    // gagal memeriksa (mis. jaringan) -> tetap lanjut supaya pekerjaan tidak macet;
+    // duplikat tetap akan ditolak ulang oleh server saat disimpan.
+    triggerFlash('ok');
+    playBeep();
+    captureFullFrame(text);
+  });
+}
+
+async function checkDuplicateQr(qrText){
+  const url = cfg.scriptUrl + '?action=checkQr&date=' + encodeURIComponent(todayStr()) + '&qr=' + encodeURIComponent(qrText);
+  const res = await fetch(url);
+  const data = await res.json();
+  if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memeriksa duplikat'); }
+  return !!data.exists;
 }
 
 /* Alur INBOUND: tanpa review, tanpa koli/kilo/BIG, langsung kirim */
@@ -524,10 +578,10 @@ function buildThumbDataUrl(sourceCanvas, targetWidth){
   return t.toDataURL('image/jpeg', 0.7);
 }
 
-function triggerFlash(){
-  flashEl.classList.remove('on');
+function triggerFlash(kind){
+  flashEl.classList.remove('on', 'reject');
   void flashEl.offsetWidth;
-  flashEl.classList.add('on');
+  flashEl.classList.add(kind === 'reject' ? 'reject' : 'on');
 }
 
 /* ============================================================
@@ -543,6 +597,12 @@ document.getElementById('btn-manual').addEventListener('click', () => {
     pendingBlobPromise = null;
     openReview('', null);
   }
+});
+
+document.getElementById('btn-manual-photo').addEventListener('click', () => {
+  // khusus OUTBOND: ambil foto dari frame kamera saat ini tanpa QR,
+  // tetap lewat review supaya bisa isi koli/kilo/BIG
+  captureFullFrame('');
 });
 
 function openReview(qrText, thumbUrl){
@@ -770,45 +830,116 @@ function fmtNum(n){
   return v % 1 === 0 ? v.toString() : v.toFixed(2);
 }
 
+const SUBKATEGORI_ORDER = ['SAMEDAY', 'VAN', 'MALAM'];
+const SUBKATEGORI_LABEL = { SAMEDAY: 'SAMEDAY', VAN: 'VAN', MALAM: 'MALAM' };
+
 function renderSummary(data){
-  summaryBody.innerHTML = `
-    <div class="summary-grid">
-      <div class="summary-box">
-        <div class="label">Reguler — Koli</div>
-        <div class="value">${fmtNum(data.reguler.koli)}</div>
+  const bySub = data.subkategori || {};
+  const keys = Object.keys(bySub);
+  // urutkan: SAMEDAY, VAN, MALAM dulu (kalau ada), sisanya menyusul
+  keys.sort((a, b) => {
+    const ia = SUBKATEGORI_ORDER.indexOf(a);
+    const ib = SUBKATEGORI_ORDER.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+
+  if(!keys.length){
+    summaryBody.innerHTML = '<p class="hint">Belum ada data untuk tanggal ini.</p>';
+    return;
+  }
+
+  summaryBody.innerHTML = keys.map(sub => {
+    const s = bySub[sub];
+    const label = SUBKATEGORI_LABEL[sub] || sub;
+    return `
+      <div style="margin-top:12px;">
+        <div style="font-size:12.5px;font-weight:700;color:var(--accent-dark);margin-bottom:4px;">${escapeHtml(label)} <span style="font-weight:400;color:#5b6570;">(${s.total.jumlah} entri)</span></div>
+        <div class="summary-grid" style="margin-top:4px;">
+          <div class="summary-box">
+            <div class="label">Reguler — Koli</div>
+            <div class="value">${fmtNum(s.reguler.koli)}</div>
+          </div>
+          <div class="summary-box">
+            <div class="label">Reguler — Kilo</div>
+            <div class="value">${fmtNum(s.reguler.kilo)} kg</div>
+          </div>
+          <div class="summary-box big">
+            <div class="label">BIG — Koli</div>
+            <div class="value">${fmtNum(s.big.koli)}</div>
+          </div>
+          <div class="summary-box big">
+            <div class="label">BIG — Kilo</div>
+            <div class="value">${fmtNum(s.big.kilo)} kg</div>
+          </div>
+          <div class="summary-box total">
+            <div class="label">Total ${escapeHtml(label)}</div>
+            <div class="value">${fmtNum(s.total.koli)} koli · ${fmtNum(s.total.kilo)} kg</div>
+          </div>
+        </div>
       </div>
-      <div class="summary-box">
-        <div class="label">Reguler — Kilo</div>
-        <div class="value">${fmtNum(data.reguler.kilo)} kg</div>
-      </div>
-      <div class="summary-box big">
-        <div class="label">BIG — Koli</div>
-        <div class="value">${fmtNum(data.big.koli)}</div>
-      </div>
-      <div class="summary-box big">
-        <div class="label">BIG — Kilo</div>
-        <div class="value">${fmtNum(data.big.kilo)} kg</div>
-      </div>
-      <div class="summary-box total">
-        <div class="label">Total Keseluruhan Hari Ini</div>
-        <div class="value">${fmtNum(data.total.koli)} koli · ${fmtNum(data.total.kilo)} kg</div>
-      </div>
-    </div>
-  `;
+    `;
+  }).join('');
 }
 
 // muat data awal kalau sudah pernah diatur sebelumnya
-if(cfg.scriptUrl && cfg.mode === 'OUTBOND'){
-  loadDatesList();
-  refreshSummary();
+if(cfg.scriptUrl){
+  if(cfg.mode === 'OUTBOND'){
+    loadDatesList();
+    refreshSummary();
+  }
+  loadSavedDatesList();
   loadSavedList();
 }
 
 /* ============================================================
-   DATA TERSIMPAN — lihat & hapus (tersambung ke Sheet + Drive)
+   DATA TERSIMPAN — lihat & hapus
+   OUTBOND: dari Sheet (+ hapus file Drive terkait)
+   INBOUND: langsung dari daftar file Drive (tanpa Sheet)
    ============================================================ */
+const savedDateSel = document.getElementById('saved-date');
 const savedList = document.getElementById('saved-list');
 const savedEmpty = document.getElementById('saved-empty');
+
+document.getElementById('btn-refresh-saved').addEventListener('click', () => {
+  loadSavedDatesList();
+  loadSavedList();
+});
+savedDateSel.addEventListener('change', loadSavedList);
+
+function ensureTodaySavedOption(){
+  const t = todayStr();
+  if(![...savedDateSel.options].some(o => o.value === t)){
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t + ' (hari ini)';
+    savedDateSel.prepend(opt);
+    savedDateSel.value = t;
+  }
+}
+ensureTodaySavedOption();
+
+async function loadSavedDatesList(){
+  if(!cfg.scriptUrl) return;
+  const action = (cfg.mode === 'INBOUND') ? 'datesInbound' : 'dates';
+  try{
+    const res = await fetch(cfg.scriptUrl + '?action=' + action);
+    const data = await res.json();
+    if(data.status === 'ok' && Array.isArray(data.dates)){
+      const current = savedDateSel.value || todayStr();
+      savedDateSel.innerHTML = '';
+      data.dates.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d;
+        opt.textContent = (d === todayStr()) ? d + ' (hari ini)' : d;
+        savedDateSel.appendChild(opt);
+      });
+      if([...savedDateSel.options].some(o => o.value === current)){
+        savedDateSel.value = current;
+      }
+    }
+  }catch(err){
+    // biarkan, tanggal hari ini tetap tersedia dari ensureTodaySavedOption
+  }
+}
 
 async function loadSavedList(){
   if(!cfg.scriptUrl){
@@ -817,21 +948,30 @@ async function loadSavedList(){
     savedEmpty.textContent = 'Atur URL Apps Script dulu.';
     return;
   }
-  const date = summaryDateSel.value || todayStr();
+  const date = savedDateSel.value || todayStr();
   savedList.innerHTML = '';
   savedEmpty.style.display = 'block';
   savedEmpty.textContent = 'Memuat…';
+
   try{
-    const res = await fetch(cfg.scriptUrl + '?action=list&date=' + encodeURIComponent(date));
-    const data = await res.json();
-    if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat data'); }
-    renderSavedList(data.items || []);
+    if(cfg.mode === 'INBOUND'){
+      if(!cfg.subkategori){ savedEmpty.textContent = 'Pilih Sub-Kategori dulu di Pengaturan.'; return; }
+      const res = await fetch(cfg.scriptUrl + '?action=listInbound&date=' + encodeURIComponent(date) + '&subkategori=' + encodeURIComponent(cfg.subkategori));
+      const data = await res.json();
+      if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat data'); }
+      renderSavedListInbound(data.items || []);
+    } else {
+      const res = await fetch(cfg.scriptUrl + '?action=list&date=' + encodeURIComponent(date));
+      const data = await res.json();
+      if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat data'); }
+      renderSavedListOutbond(data.items || []);
+    }
   }catch(err){
     savedEmpty.textContent = 'Gagal memuat: ' + err.message;
   }
 }
 
-function renderSavedList(items){
+function renderSavedListOutbond(items){
   savedList.innerHTML = '';
   if(!items.length){
     savedEmpty.style.display = 'block';
@@ -842,10 +982,9 @@ function renderSavedList(items){
 
   items.forEach(item => {
     const li = document.createElement('li');
-    li.dataset.id = item.id;
-
     const label = item.qrText ? item.qrText : '(input manual)';
     const detailParts = [];
+    if(item.subkategori) detailParts.push(item.subkategori);
     if(item.koli) detailParts.push('Koli: ' + item.koli);
     if(item.kilo) detailParts.push('Kilo: ' + item.kilo);
     const detailStr = detailParts.length ? detailParts.join(' · ') : 'tanpa angka';
@@ -862,19 +1001,47 @@ function renderSavedList(items){
       </div>
     `;
     li.querySelector('[data-role="delete-btn"]').addEventListener('click', () => {
-      confirmAndDelete(item.id, li);
+      confirmAndDelete({ action: 'delete', id: item.id }, li);
     });
     savedList.appendChild(li);
   });
 }
 
-function confirmAndDelete(id, li){
-  const ok = window.confirm('Hapus data ini? Foto di Drive juga akan dihapus. Tindakan ini tidak bisa dibatalkan.');
-  if(!ok) return;
-  deleteEntry(id, li);
+function renderSavedListInbound(items){
+  savedList.innerHTML = '';
+  if(!items.length){
+    savedEmpty.style.display = 'block';
+    savedEmpty.textContent = 'Belum ada foto untuk tanggal & sub-kategori ini.';
+    return;
+  }
+  savedEmpty.style.display = 'none';
+
+  items.forEach(item => {
+    const li = document.createElement('li');
+    li.innerHTML = `
+      <div class="saved-row">
+        <div>
+          <div class="code">${escapeHtml(item.name || '')}</div>
+          <div class="meta">${escapeHtml(item.createdTime || '')}</div>
+          ${item.url ? `<a class="saved-link" href="${item.url}" target="_blank" rel="noopener">Lihat foto</a>` : ''}
+        </div>
+        <button class="btn-danger" data-role="delete-btn">Hapus</button>
+      </div>
+    `;
+    li.querySelector('[data-role="delete-btn"]').addEventListener('click', () => {
+      confirmAndDelete({ action: 'deleteInbound', fileId: item.id }, li);
+    });
+    savedList.appendChild(li);
+  });
 }
 
-async function deleteEntry(id, li){
+function confirmAndDelete(payload, li){
+  const ok = window.confirm('Hapus data ini? Foto di Drive juga akan dihapus. Tindakan ini tidak bisa dibatalkan.');
+  if(!ok) return;
+  deleteEntry(payload, li);
+}
+
+async function deleteEntry(payload, li){
   const btn = li.querySelector('[data-role="delete-btn"]');
   btn.disabled = true;
   btn.textContent = 'Menghapus…';
@@ -882,7 +1049,7 @@ async function deleteEntry(id, li){
     const res = await fetch(cfg.scriptUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'delete', id: id })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal menghapus'); }
@@ -891,7 +1058,7 @@ async function deleteEntry(id, li){
       savedEmpty.style.display = 'block';
       savedEmpty.textContent = 'Belum ada data untuk tanggal ini.';
     }
-    refreshSummary();
+    if(cfg.mode === 'OUTBOND'){ refreshSummary(); }
   }catch(err){
     btn.disabled = false;
     btn.textContent = 'Hapus';
