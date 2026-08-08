@@ -107,13 +107,19 @@
   .btn-danger{background:#f6e6dd;color:var(--warn);padding:6px 10px;font-size:12.5px;}
   .btn-danger:disabled{opacity:0.5;cursor:not-allowed;}
   .saved-link{font-size:12px;}
+
+  .active-context{
+    font-size:12px;color:#5b6570;margin-top:8px;
+    display:flex;gap:6px;flex-wrap:wrap;
+  }
+  .active-context b{color:var(--ink);}
 </style>
 </head>
 <body>
 
 <header>
   <h1>DATA TIMBANG</h1>
-  <p>Scan QR atau input manual: koli, kilo, kategori BIG — tersimpan ke Drive + Sheet.</p>
+  <p>Mode OUTBOND (koli/kilo/BIG + Sheet) atau INBOUND (foto otomatis, tanpa Sheet).</p>
   <span id="status-pill">Belum diatur</span>
 </header>
 
@@ -127,12 +133,27 @@
           <label>URL Web App Apps Script</label>
           <input type="text" id="cfg-script-url" placeholder="https://script.google.com/macros/s/xxxx/exec">
         </div>
+        <div class="field">
+          <label>Mode</label>
+          <select id="cfg-mode">
+            <option value="">— Pilih mode —</option>
+            <option value="OUTBOND">OUTBOND</option>
+            <option value="INBOUND">INBOUND</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Sub-Kategori</label>
+          <select id="cfg-subkategori">
+            <option value="">— Pilih mode dulu —</option>
+          </select>
+        </div>
         <div class="row">
           <button class="btn-secondary" id="save-cfg">Simpan pengaturan</button>
         </div>
-        <p class="hint">Tempel URL "Web app" hasil Deploy dari Apps Script. Disimpan di browser perangkat ini saja (localStorage). Aplikasi ini tidak butuh login — semua data langsung tersambung ke Drive &amp; Sheet yang sama untuk semua pengguna.</p>
+        <p class="hint">Tempel URL "Web app" hasil Deploy dari Apps Script. Mode &amp; Sub-Kategori cukup dipilih sekali — tetap tersimpan sampai Anda ubah sendiri. Disimpan di browser perangkat ini saja (localStorage). Aplikasi ini tidak butuh login — semua data langsung tersambung ke Drive (dan Sheet, khusus OUTBOND) yang sama untuk semua pengguna.</p>
       </div>
     </details>
+    <div class="active-context" id="active-context"></div>
   </div>
 
   <div class="card">
@@ -183,7 +204,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="summary-card">
     <div class="row" style="justify-content:space-between;margin-bottom:6px;">
       <strong style="font-size:13px;">Ringkasan Harian</strong>
       <button class="btn-secondary" id="btn-refresh-summary">Refresh</button>
@@ -197,7 +218,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="saved-card">
     <div class="row" style="justify-content:space-between;margin-bottom:6px;">
       <strong style="font-size:13px;">Data Tersimpan (bisa dihapus)</strong>
       <button class="btn-secondary" id="btn-refresh-saved">Refresh</button>
@@ -233,42 +254,103 @@ function setStatus(text, isError){
    ============================================================ */
 const REPEAT_COOLDOWN_MS = 4000;
 
-let cfg = {
-  scriptUrl: localStorage.getItem('dt_script_url') || ''
+const SUBKATEGORI_OPTIONS = {
+  OUTBOND: ['SAMEDAY', 'VAN', 'MALAM'],
+  INBOUND: ['VAN', 'MALAM']
 };
 
+let cfg = {
+  scriptUrl: localStorage.getItem('dt_script_url') || '',
+  mode: localStorage.getItem('dt_mode') || '',
+  subkategori: ''
+};
+cfg.subkategori = cfg.mode ? (localStorage.getItem('dt_subkategori_' + cfg.mode) || '') : '';
+
 document.getElementById('cfg-script-url').value = cfg.scriptUrl;
+document.getElementById('cfg-mode').value = cfg.mode;
+populateSubkategoriOptions(cfg.mode, cfg.subkategori);
 refreshReadyState();
+applyModeUI();
+
+function populateSubkategoriOptions(mode, preselect){
+  const sel = document.getElementById('cfg-subkategori');
+  const opts = SUBKATEGORI_OPTIONS[mode] || [];
+  sel.innerHTML = '';
+  if(!opts.length){
+    sel.innerHTML = '<option value="">— Pilih mode dulu —</option>';
+    return;
+  }
+  const blank = document.createElement('option');
+  blank.value = ''; blank.textContent = '— Pilih sub-kategori —';
+  sel.appendChild(blank);
+  opts.forEach(o => {
+    const opt = document.createElement('option');
+    opt.value = o; opt.textContent = o;
+    sel.appendChild(opt);
+  });
+  if(preselect && opts.includes(preselect)){ sel.value = preselect; }
+}
+
+document.getElementById('cfg-mode').addEventListener('change', () => {
+  const mode = document.getElementById('cfg-mode').value;
+  const remembered = mode ? (localStorage.getItem('dt_subkategori_' + mode) || '') : '';
+  populateSubkategoriOptions(mode, remembered);
+});
 
 document.getElementById('save-cfg').addEventListener('click', () => {
   try{
     const val = document.getElementById('cfg-script-url').value.trim();
+    const mode = document.getElementById('cfg-mode').value;
+    const subkategori = document.getElementById('cfg-subkategori').value;
+
     if(!val){ setStatus('Isi dulu URL-nya', true); return; }
     if(!val.startsWith('https://script.google.com/')){
       setStatus('URL sepertinya bukan URL Apps Script', true); return;
     }
+    if(!mode){ setStatus('Pilih Mode dulu (OUTBOND/INBOUND)', true); return; }
+    if(!subkategori){ setStatus('Pilih Sub-Kategori dulu', true); return; }
+
     cfg.scriptUrl = val;
+    cfg.mode = mode;
+    cfg.subkategori = subkategori;
     localStorage.setItem('dt_script_url', cfg.scriptUrl);
+    localStorage.setItem('dt_mode', cfg.mode);
+    localStorage.setItem('dt_subkategori_' + cfg.mode, cfg.subkategori);
+
     refreshReadyState();
-    loadDatesList();
-    refreshSummary();
+    applyModeUI();
+    if(cfg.mode === 'OUTBOND'){
+      loadDatesList();
+      refreshSummary();
+      loadSavedList();
+    }
   }catch(err){
     setStatus('Gagal simpan: ' + err.message, true);
   }
 });
 
 function refreshReadyState(){
-  if(cfg.scriptUrl){
+  const ctxEl = document.getElementById('active-context');
+  if(cfg.scriptUrl && cfg.mode && cfg.subkategori){
     document.getElementById('setup-details').open = false;
     document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-manual').disabled = false;
     setStatus('Siap dipakai ✓', false);
+    ctxEl.innerHTML = '<span>Mode: <b>' + escapeHtml(cfg.mode) + '</b></span><span>· Sub-Kategori: <b>' + escapeHtml(cfg.subkategori) + '</b></span>';
   } else {
     document.getElementById('setup-details').open = true;
     document.getElementById('btn-start').disabled = true;
     document.getElementById('btn-manual').disabled = true;
     setStatus('Belum diatur', true);
+    ctxEl.innerHTML = '';
   }
+}
+
+function applyModeUI(){
+  const isInbound = cfg.mode === 'INBOUND';
+  document.getElementById('btn-manual').textContent = isInbound ? 'Ambil Foto Manual (tanpa QR)' : '+ Input Manual';
+  document.getElementById('summary-card').style.display = isInbound ? 'none' : 'block';
+  document.getElementById('saved-card').style.display = isInbound ? 'none' : 'block';
 }
 
 /* ============================================================
@@ -381,7 +463,38 @@ function handleDetectedCode(text){
 
   triggerFlash();
   playBeep();
-  captureFullFrame(text);
+
+  if(cfg.mode === 'INBOUND'){
+    captureAndSendDirect(text);
+  } else {
+    captureFullFrame(text);
+  }
+}
+
+/* Alur INBOUND: tanpa review, tanpa koli/kilo/BIG, langsung kirim */
+function captureAndSendDirect(qrText){
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  const entryId = addLogEntry(qrText, '', '', false, 'pending');
+
+  canvas.toBlob(async (blob) => {
+    try{
+      const payload = {
+        action: 'create',
+        mode: cfg.mode,
+        subkategori: cfg.subkategori,
+        qrText: qrText,
+        koli: '', kilo: '', big: false
+      };
+      if(blob){ payload.image = await blobToBase64(blob); }
+      await sendToAppsScript(payload);
+      updateLogEntry(entryId, 'up', 'Tersimpan');
+    }catch(err){
+      updateLogEntry(entryId, 'fail', err.message || 'Gagal mengirim');
+    }
+  }, 'image/jpeg', 0.85);
 }
 
 function captureFullFrame(qrText){
@@ -424,8 +537,12 @@ const reviewCard = document.getElementById('review-card');
 const reviewThumb = document.getElementById('review-thumb');
 
 document.getElementById('btn-manual').addEventListener('click', () => {
-  pendingBlobPromise = null;
-  openReview('', null);
+  if(cfg.mode === 'INBOUND'){
+    captureAndSendDirect(''); // tanpa QR, nama file otomatis pakai penanda "manual"
+  } else {
+    pendingBlobPromise = null;
+    openReview('', null);
+  }
 });
 
 function openReview(qrText, thumbUrl){
@@ -482,7 +599,7 @@ document.getElementById('review-save').addEventListener('click', async () => {
   closeReview();
 
   try{
-    const payload = { action: 'create', qrText: qrText, koli: koli, kilo: kilo, big: big };
+    const payload = { action: 'create', mode: cfg.mode, subkategori: cfg.subkategori, qrText: qrText, koli: koli, kilo: kilo, big: big };
     if(blobPromise){
       const blob = await blobPromise;
       if(blob){ payload.image = await blobToBase64(blob); }
@@ -681,7 +798,7 @@ function renderSummary(data){
 }
 
 // muat data awal kalau sudah pernah diatur sebelumnya
-if(cfg.scriptUrl){
+if(cfg.scriptUrl && cfg.mode === 'OUTBOND'){
   loadDatesList();
   refreshSummary();
   loadSavedList();
