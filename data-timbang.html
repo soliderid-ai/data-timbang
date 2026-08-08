@@ -489,14 +489,7 @@ function handleDetectedCode(text){
   lastCode = text;
   lastCodeTime = now;
 
-  if(cfg.mode === 'INBOUND'){
-    triggerFlash('ok');
-    playBeep();
-    captureAndSendDirect(text);
-    return;
-  }
-
-  // OUTBOND: cek dulu apakah QR ini sudah discan hari ini sebelum menangkap foto
+  // cek dulu apakah QR ini sudah discan hari ini (berlaku untuk OUTBOND maupun INBOUND)
   scanHint.textContent = 'Memeriksa QR…';
   checkDuplicateQr(text).then(exists => {
     if(exists){
@@ -507,18 +500,26 @@ function handleDetectedCode(text){
     }
     triggerFlash('ok');
     playBeep();
-    captureFullFrame(text);
+    if(cfg.mode === 'INBOUND'){
+      captureAndSendDirect(text);
+    } else {
+      captureFullFrame(text);
+    }
   }).catch(() => {
     // gagal memeriksa (mis. jaringan) -> tetap lanjut supaya pekerjaan tidak macet;
     // duplikat tetap akan ditolak ulang oleh server saat disimpan.
     triggerFlash('ok');
     playBeep();
-    captureFullFrame(text);
+    if(cfg.mode === 'INBOUND'){
+      captureAndSendDirect(text);
+    } else {
+      captureFullFrame(text);
+    }
   });
 }
 
 async function checkDuplicateQr(qrText){
-  const url = cfg.scriptUrl + '?action=checkQr&date=' + encodeURIComponent(todayStr()) + '&qr=' + encodeURIComponent(qrText);
+  const url = cfg.scriptUrl + '?action=checkQr&date=' + encodeURIComponent(todayStr()) + '&qr=' + encodeURIComponent(qrText) + '&mode=' + encodeURIComponent(cfg.mode);
   const res = await fetch(url);
   const data = await res.json();
   if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memeriksa duplikat'); }
