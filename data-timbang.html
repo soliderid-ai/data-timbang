@@ -535,6 +535,26 @@ function resetKnownScannedIfNewDay(){
   }
 }
 
+// INBOUND menyimpan nama file dalam bentuk "tersanitasi" (karakter khusus diganti
+// underscore), sama seperti yang dilakukan backend saat membuat nama file. Supaya
+// pencocokan cache lokal konsisten dengan itu, teks QR untuk mode INBOUND disamakan
+// dulu formatnya sebelum disimpan/dicocokkan/dihapus dari cache.
+function sanitizeQrKey(text){
+  let clean = (text || '').replace(/[\/\\:*?"<>|\r\n]+/g, '_').trim();
+  if(clean.length > 80) clean = clean.slice(0, 80);
+  return clean || 'qr';
+}
+function qrCacheKey(mode, text){
+  if(!text) return '';
+  return mode === 'INBOUND' ? sanitizeQrKey(text) : text;
+}
+// Ambil kembali teks QR (bentuk tersanitasi) dari nama file INBOUND, mis.
+// "ASDF_2026-08-09_10-15-00.jpg" -> "ASDF"
+function extractQrFromInboundFilename(name){
+  const m = (name || '').match(/^(.*)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.jpg$/);
+  return m ? m[1] : '';
+}
+
 function handleDetectedCode(text){
   const now = Date.now();
   if(text === lastCode && (now - lastCodeTime) < REPEAT_COOLDOWN_MS) return;
@@ -542,9 +562,10 @@ function handleDetectedCode(text){
   lastCodeTime = now;
 
   resetKnownScannedIfNewDay();
+  const key = qrCacheKey(cfg.mode, text);
 
   // sudah diketahui duplikat dari cache lokal -> tolak seketika, tanpa ke server
-  if(knownScannedToday.has(text)){
+  if(knownScannedToday.has(key)){
     triggerFlash('reject');
     playReject();
     scanHint.textContent = 'QR ini sudah discan hari ini — ditolak. Arahkan ke QR lain.';
@@ -583,7 +604,7 @@ function captureAndSendDirect(qrText){
       };
       if(blob){ payload.image = await blobToBase64(blob); }
       await sendToAppsScript(payload);
-      if(qrText) knownScannedToday.add(qrText);
+      if(qrText) knownScannedToday.add(qrCacheKey(cfg.mode, qrText));
       updateLogEntry(entryId, 'up', 'Tersimpan');
     }catch(err){
       updateLogEntry(entryId, 'fail', err.message || 'Gagal mengirim');
@@ -705,7 +726,7 @@ document.getElementById('review-save').addEventListener('click', async () => {
       if(blob){ payload.image = await blobToBase64(blob); }
     }
     const data = await sendToAppsScript(payload);
-    if(qrText) knownScannedToday.add(qrText);
+    if(qrText) knownScannedToday.add(qrCacheKey(cfg.mode, qrText));
     updateLogEntry(entryId, 'up', 'Tersimpan');
     refreshSummary();
     loadSavedList();
@@ -1057,8 +1078,8 @@ function primeKnownScannedFromSavedItems(dateOfItems){
   if(dateOfItems !== todayStr()) return;
   resetKnownScannedIfNewDay();
   savedItemsAll.forEach(item => {
-    const text = (cfg.mode === 'INBOUND') ? null : item.qrText; // nama file INBOUND sudah disanitasi, tidak selalu sama persis dgn teks QR asli
-    if(text) knownScannedToday.add(text);
+    const raw = (cfg.mode === 'INBOUND') ? extractQrFromInboundFilename(item.name) : item.qrText;
+    if(raw) knownScannedToday.add(qrCacheKey(cfg.mode, raw));
   });
 }
 
@@ -1205,6 +1226,7 @@ function confirmAndDeleteSingle(payload, li, key){
 }
 
 async function deleteOne(payload, li, key){
+  const item = savedItemsAll.find(i => itemKey(i) === key);
   const btn = li.querySelector('[data-role="delete-btn"]');
   btn.disabled = true;
   btn.textContent = 'Menghapus…';
@@ -1212,6 +1234,7 @@ async function deleteOne(payload, li, key){
     await sendDeleteRequest(payload);
     savedSelected.delete(key);
     savedItemsAll = savedItemsAll.filter(i => itemKey(i) !== key);
+    removeFromLocalScanCache(item);
     renderSavedFiltered();
     if(cfg.mode === 'OUTBOND'){ refreshSummary(); }
   }catch(err){
@@ -1219,6 +1242,13 @@ async function deleteOne(payload, li, key){
     btn.textContent = 'Hapus';
     alert('Gagal menghapus: ' + err.message);
   }
+}
+
+/** Keluarkan QR item yang baru dihapus dari cache lokal, supaya boleh discan lagi tanpa nunggu sinkron 20 detik */
+function removeFromLocalScanCache(item){
+  if(!item) return;
+  const raw = (cfg.mode === 'INBOUND') ? extractQrFromInboundFilename(item.name) : item.qrText;
+  if(raw) knownScannedToday.delete(qrCacheKey(cfg.mode, raw));
 }
 
 async function deleteSelected(){
@@ -1238,6 +1268,7 @@ async function deleteSelected(){
       await sendDeleteRequest(payload);
       savedSelected.delete(key);
       savedItemsAll = savedItemsAll.filter(i => itemKey(i) !== key);
+      removeFromLocalScanCache(item);
     }catch(err){
       failed.push(item);
     }
