@@ -105,6 +105,9 @@
   #saved-list li{padding:9px 0;border-bottom:1px solid var(--line);}
   #saved-list li:last-child{border-bottom:none;}
   .saved-row{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
+  .saved-row .saved-check{margin-top:2px;width:17px;height:17px;flex-shrink:0;}
+  .saved-row .saved-main{display:flex;gap:8px;flex:1;min-width:0;}
+  #saved-list li.selected{background:#f2f8f4;}
   .btn-danger{background:#f6e6dd;color:var(--warn);padding:6px 10px;font-size:12.5px;}
   .btn-danger:disabled{opacity:0.5;cursor:not-allowed;}
   .saved-link{font-size:12px;}
@@ -228,6 +231,16 @@
     <div class="field">
       <label>Tanggal</label>
       <select id="saved-date"></select>
+    </div>
+    <div class="field">
+      <label>Cari</label>
+      <input type="text" id="saved-search" placeholder="Cari isi QR / nama file…">
+    </div>
+    <div class="row" style="justify-content:space-between;margin:4px 0 8px;">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#555;">
+        <input type="checkbox" id="saved-select-all" style="width:16px;height:16px;"> Pilih semua
+      </label>
+      <button class="btn-danger" id="btn-delete-selected" disabled>Hapus Terpilih (0)</button>
     </div>
     <p class="hint" id="saved-hint" style="margin-bottom:8px;"></p>
     <ul id="saved-list"></ul>
@@ -893,19 +906,51 @@ if(cfg.scriptUrl){
 }
 
 /* ============================================================
-   DATA TERSIMPAN — lihat & hapus
+   DATA TERSIMPAN — lihat, cari, pilih (satu/semua), & hapus
    OUTBOND: dari Sheet (+ hapus file Drive terkait)
    INBOUND: langsung dari daftar file Drive (tanpa Sheet)
    ============================================================ */
 const savedDateSel = document.getElementById('saved-date');
+const savedSearch = document.getElementById('saved-search');
+const savedSelectAll = document.getElementById('saved-select-all');
+const btnDeleteSelected = document.getElementById('btn-delete-selected');
 const savedList = document.getElementById('saved-list');
 const savedEmpty = document.getElementById('saved-empty');
+
+let savedItemsAll = [];    // seluruh data hasil fetch untuk tanggal terpilih (belum difilter)
+let savedSelected = new Set(); // id/fileId yang sedang dicentang
 
 document.getElementById('btn-refresh-saved').addEventListener('click', () => {
   loadSavedDatesList();
   loadSavedList();
 });
 savedDateSel.addEventListener('change', loadSavedList);
+
+savedSearch.addEventListener('input', () => {
+  renderSavedFiltered();
+});
+
+savedSelectAll.addEventListener('change', () => {
+  const visibleItems = getFilteredItems();
+  if(savedSelectAll.checked){
+    visibleItems.forEach(item => savedSelected.add(itemKey(item)));
+  } else {
+    visibleItems.forEach(item => savedSelected.delete(itemKey(item)));
+  }
+  renderSavedFiltered();
+});
+
+btnDeleteSelected.addEventListener('click', () => {
+  if(!savedSelected.size) return;
+  const ok = window.confirm('Hapus ' + savedSelected.size + ' data terpilih? Foto di Drive juga akan dihapus. Tindakan ini tidak bisa dibatalkan.');
+  if(!ok) return;
+  deleteSelected();
+});
+
+function itemKey(item){
+  // OUTBOND pakai item.id (baris Sheet), INBOUND pakai item.id (file Drive) — sama-sama field "id"
+  return item.id;
+}
 
 function ensureTodaySavedOption(){
   const t = todayStr();
@@ -943,14 +988,20 @@ async function loadSavedDatesList(){
 }
 
 async function loadSavedList(){
+  savedSelected.clear();
+  savedSearch.value = '';
+  savedSelectAll.checked = false;
+
   if(!cfg.scriptUrl){
-    savedList.innerHTML = '';
-    savedEmpty.style.display = 'block';
+    savedItemsAll = [];
+    renderSavedFiltered();
     savedEmpty.textContent = 'Atur URL Apps Script dulu.';
     return;
   }
+
   const date = savedDateSel.value || todayStr();
-  savedList.innerHTML = '';
+  savedItemsAll = [];
+  renderSavedFiltered();
   savedEmpty.style.display = 'block';
   savedEmpty.textContent = 'Memuat…';
 
@@ -960,111 +1011,217 @@ async function loadSavedList(){
       const res = await fetch(cfg.scriptUrl + '?action=listInbound&date=' + encodeURIComponent(date) + '&subkategori=' + encodeURIComponent(cfg.subkategori));
       const data = await res.json();
       if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat data'); }
-      renderSavedListInbound(data.items || []);
+      savedItemsAll = data.items || [];
     } else {
       const res = await fetch(cfg.scriptUrl + '?action=list&date=' + encodeURIComponent(date));
       const data = await res.json();
       if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat data'); }
-      renderSavedListOutbond(data.items || []);
+      savedItemsAll = data.items || [];
     }
+    renderSavedFiltered();
   }catch(err){
     savedEmpty.textContent = 'Gagal memuat: ' + err.message;
   }
 }
 
-function renderSavedListOutbond(items){
-  savedList.innerHTML = '';
-  if(!items.length){
+function searchableText(item){
+  if(cfg.mode === 'INBOUND'){
+    return (item.name || '').toLowerCase();
+  }
+  return ((item.qrText || '') + ' ' + (item.subkategori || '')).toLowerCase();
+}
+
+function getFilteredItems(){
+  const q = savedSearch.value.trim().toLowerCase();
+  if(!q) return savedItemsAll;
+  return savedItemsAll.filter(item => searchableText(item).indexOf(q) > -1);
+}
+
+function renderSavedFiltered(){
+  const items = getFilteredItems();
+
+  if(!savedItemsAll.length){
+    savedList.innerHTML = '';
     savedEmpty.style.display = 'block';
-    savedEmpty.textContent = 'Belum ada data untuk tanggal ini.';
+    savedEmpty.textContent = (cfg.mode === 'INBOUND')
+      ? 'Belum ada foto untuk tanggal & sub-kategori ini.'
+      : 'Belum ada data untuk tanggal ini.';
+    updateBulkDeleteButton();
+    savedSelectAll.checked = false;
+    savedSelectAll.indeterminate = false;
     return;
   }
+
+  if(!items.length){
+    savedList.innerHTML = '';
+    savedEmpty.style.display = 'block';
+    savedEmpty.textContent = 'Tidak ada yang cocok dengan pencarian.';
+    updateBulkDeleteButton();
+    savedSelectAll.checked = false;
+    savedSelectAll.indeterminate = false;
+    return;
+  }
+
   savedEmpty.style.display = 'none';
+  savedList.innerHTML = '';
 
   items.forEach(item => {
-    const li = document.createElement('li');
-    const label = item.qrText ? item.qrText : '(input manual)';
-    const detailParts = [];
-    if(item.subkategori) detailParts.push(item.subkategori);
-    if(item.koli) detailParts.push('Koli: ' + item.koli);
-    if(item.kilo) detailParts.push('Kilo: ' + item.kilo);
-    const detailStr = detailParts.length ? detailParts.join(' · ') : 'tanpa angka';
-    const isBig = (item.kategori || '').toString().toUpperCase() === 'BIG';
+    const li = (cfg.mode === 'INBOUND') ? buildSavedRowInbound(item) : buildSavedRowOutbond(item);
+    savedList.appendChild(li);
+  });
 
-    li.innerHTML = `
-      <div class="saved-row">
+  const selectedVisibleCount = items.filter(i => savedSelected.has(itemKey(i))).length;
+  savedSelectAll.checked = selectedVisibleCount === items.length;
+  savedSelectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < items.length;
+
+  updateBulkDeleteButton();
+}
+
+function updateBulkDeleteButton(){
+  btnDeleteSelected.textContent = 'Hapus Terpilih (' + savedSelected.size + ')';
+  btnDeleteSelected.disabled = savedSelected.size === 0;
+}
+
+function buildSavedRowOutbond(item){
+  const li = document.createElement('li');
+  const key = itemKey(item);
+  if(savedSelected.has(key)) li.classList.add('selected');
+
+  const label = item.qrText ? item.qrText : '(input manual)';
+  const detailParts = [];
+  if(item.subkategori) detailParts.push(item.subkategori);
+  if(item.koli) detailParts.push('Koli: ' + item.koli);
+  if(item.kilo) detailParts.push('Kilo: ' + item.kilo);
+  const detailStr = detailParts.length ? detailParts.join(' · ') : 'tanpa angka';
+  const isBig = (item.kategori || '').toString().toUpperCase() === 'BIG';
+
+  li.innerHTML = `
+    <div class="saved-row">
+      <div class="saved-main">
+        <input type="checkbox" class="saved-check" data-role="select-item" ${savedSelected.has(key) ? 'checked' : ''}>
         <div>
           <div class="code">${escapeHtml(label)}</div>
           <div class="meta">${escapeHtml(item.timestamp || '')} · ${escapeHtml(detailStr)} ${isBig ? '· <b style="color:var(--big)">BIG</b>' : ''}</div>
           ${item.fileUrl ? `<a class="saved-link" href="${item.fileUrl}" target="_blank" rel="noopener">Lihat foto</a>` : ''}
         </div>
-        <button class="btn-danger" data-role="delete-btn">Hapus</button>
       </div>
-    `;
-    li.querySelector('[data-role="delete-btn"]').addEventListener('click', () => {
-      confirmAndDelete({ action: 'delete', id: item.id }, li);
-    });
-    savedList.appendChild(li);
+      <button class="btn-danger" data-role="delete-btn">Hapus</button>
+    </div>
+  `;
+
+  li.querySelector('[data-role="select-item"]').addEventListener('change', (e) => {
+    toggleSelect(key, e.target.checked, li);
   });
+  li.querySelector('[data-role="delete-btn"]').addEventListener('click', () => {
+    confirmAndDeleteSingle({ action: 'delete', id: item.id }, li, key);
+  });
+
+  return li;
 }
 
-function renderSavedListInbound(items){
-  savedList.innerHTML = '';
-  if(!items.length){
-    savedEmpty.style.display = 'block';
-    savedEmpty.textContent = 'Belum ada foto untuk tanggal & sub-kategori ini.';
-    return;
-  }
-  savedEmpty.style.display = 'none';
+function buildSavedRowInbound(item){
+  const li = document.createElement('li');
+  const key = itemKey(item);
+  if(savedSelected.has(key)) li.classList.add('selected');
 
-  items.forEach(item => {
-    const li = document.createElement('li');
-    li.innerHTML = `
-      <div class="saved-row">
+  li.innerHTML = `
+    <div class="saved-row">
+      <div class="saved-main">
+        <input type="checkbox" class="saved-check" data-role="select-item" ${savedSelected.has(key) ? 'checked' : ''}>
         <div>
           <div class="code">${escapeHtml(item.name || '')}</div>
           <div class="meta">${escapeHtml(item.createdTime || '')}</div>
           ${item.url ? `<a class="saved-link" href="${item.url}" target="_blank" rel="noopener">Lihat foto</a>` : ''}
         </div>
-        <button class="btn-danger" data-role="delete-btn">Hapus</button>
       </div>
-    `;
-    li.querySelector('[data-role="delete-btn"]').addEventListener('click', () => {
-      confirmAndDelete({ action: 'deleteInbound', fileId: item.id }, li);
-    });
-    savedList.appendChild(li);
+      <button class="btn-danger" data-role="delete-btn">Hapus</button>
+    </div>
+  `;
+
+  li.querySelector('[data-role="select-item"]').addEventListener('change', (e) => {
+    toggleSelect(key, e.target.checked, li);
   });
+  li.querySelector('[data-role="delete-btn"]').addEventListener('click', () => {
+    confirmAndDeleteSingle({ action: 'deleteInbound', fileId: item.id }, li, key);
+  });
+
+  return li;
 }
 
-function confirmAndDelete(payload, li){
+function toggleSelect(key, checked, li){
+  if(checked){ savedSelected.add(key); li.classList.add('selected'); }
+  else { savedSelected.delete(key); li.classList.remove('selected'); }
+
+  const items = getFilteredItems();
+  const selectedVisibleCount = items.filter(i => savedSelected.has(itemKey(i))).length;
+  savedSelectAll.checked = items.length > 0 && selectedVisibleCount === items.length;
+  savedSelectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < items.length;
+
+  updateBulkDeleteButton();
+}
+
+function confirmAndDeleteSingle(payload, li, key){
   const ok = window.confirm('Hapus data ini? Foto di Drive juga akan dihapus. Tindakan ini tidak bisa dibatalkan.');
   if(!ok) return;
-  deleteEntry(payload, li);
+  deleteOne(payload, li, key);
 }
 
-async function deleteEntry(payload, li){
+async function deleteOne(payload, li, key){
   const btn = li.querySelector('[data-role="delete-btn"]');
   btn.disabled = true;
   btn.textContent = 'Menghapus…';
   try{
-    const res = await fetch(cfg.scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
-    if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal menghapus'); }
-    li.remove();
-    if(!savedList.children.length){
-      savedEmpty.style.display = 'block';
-      savedEmpty.textContent = 'Belum ada data untuk tanggal ini.';
-    }
+    await sendDeleteRequest(payload);
+    savedSelected.delete(key);
+    savedItemsAll = savedItemsAll.filter(i => itemKey(i) !== key);
+    renderSavedFiltered();
     if(cfg.mode === 'OUTBOND'){ refreshSummary(); }
   }catch(err){
     btn.disabled = false;
     btn.textContent = 'Hapus';
     alert('Gagal menghapus: ' + err.message);
   }
+}
+
+async function deleteSelected(){
+  btnDeleteSelected.disabled = true;
+  btnDeleteSelected.textContent = 'Menghapus…';
+
+  const keys = Array.from(savedSelected);
+  const failed = [];
+
+  for(const key of keys){
+    const item = savedItemsAll.find(i => itemKey(i) === key);
+    if(!item) continue;
+    const payload = (cfg.mode === 'INBOUND')
+      ? { action: 'deleteInbound', fileId: item.id }
+      : { action: 'delete', id: item.id };
+    try{
+      await sendDeleteRequest(payload);
+      savedSelected.delete(key);
+      savedItemsAll = savedItemsAll.filter(i => itemKey(i) !== key);
+    }catch(err){
+      failed.push(item);
+    }
+  }
+
+  renderSavedFiltered();
+  if(cfg.mode === 'OUTBOND'){ refreshSummary(); }
+
+  if(failed.length){
+    alert('Sebagian gagal dihapus (' + failed.length + ' item). Coba lagi untuk item yang tersisa.');
+  }
+}
+
+async function sendDeleteRequest(payload){
+  const res = await fetch(cfg.scriptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal menghapus'); }
+  return data;
 }
 </script>
 
