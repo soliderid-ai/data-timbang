@@ -446,6 +446,8 @@ function playReject(){
     osc.stop(audioCtx.currentTime + 0.23);
   }catch(e){ /* abaikan */ }
 }
+let syncIntervalId = null;
+
 async function startCamera(){
   ensureAudio(); // dibuat saat ini juga (dipicu oleh tap pengguna) supaya suara diizinkan browser
   try{
@@ -461,6 +463,12 @@ async function startCamera(){
     document.getElementById('btn-stop').style.display='inline-block';
     scanHint.textContent = 'Kamera aktif — mencari QR code…';
     tick();
+
+    // sinkron cache lokal di latar belakang tiap 20 detik — supaya QR yang baru
+    // discan dari HP lain ikut diketahui, tanpa menunda proses scan di HP ini
+    syncKnownScannedFromServer();
+    if(syncIntervalId) clearInterval(syncIntervalId);
+    syncIntervalId = setInterval(syncKnownScannedFromServer, 20000);
   }catch(err){
     setStatus('Tidak bisa akses kamera: ' + err.message, true);
   }
@@ -470,9 +478,26 @@ function stopCamera(){
   scanning = false;
   if(rafId) cancelAnimationFrame(rafId);
   if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if(syncIntervalId){ clearInterval(syncIntervalId); syncIntervalId = null; }
   document.getElementById('btn-start').style.display='inline-block';
   document.getElementById('btn-stop').style.display='none';
   scanHint.textContent = '';
+}
+
+/** Ambil daftar QR yang sudah tercatat hari ini dari server (cepat, dari cache) dan gabungkan ke cache lokal */
+async function syncKnownScannedFromServer(){
+  if(!cfg.scriptUrl) return;
+  resetKnownScannedIfNewDay();
+  try{
+    const url = cfg.scriptUrl + '?action=qrList&date=' + encodeURIComponent(todayStr()) + '&mode=' + encodeURIComponent(cfg.mode);
+    const res = await fetch(url);
+    const data = await res.json();
+    if(data.status === 'ok' && Array.isArray(data.list)){
+      data.list.forEach(qr => knownScannedToday.add(qr));
+    }
+  }catch(err){
+    // gagal sinkron, tidak apa — akan dicoba lagi 20 detik berikutnya
+  }
 }
 
 function tick(){
@@ -526,42 +551,17 @@ function handleDetectedCode(text){
     return;
   }
 
-  // cek ke server (dipercepat lewat cache di sisi Apps Script)
-  scanHint.textContent = 'Memeriksa QR…';
-  checkDuplicateQr(text).then(exists => {
-    if(exists){
-      knownScannedToday.add(text);
-      triggerFlash('reject');
-      playReject();
-      scanHint.textContent = 'QR ini sudah discan hari ini — ditolak. Arahkan ke QR lain.';
-      return;
-    }
-    triggerFlash('ok');
-    playBeep();
-    if(cfg.mode === 'INBOUND'){
-      captureAndSendDirect(text);
-    } else {
-      captureFullFrame(text);
-    }
-  }).catch(() => {
-    // gagal memeriksa (mis. jaringan) -> tetap lanjut supaya pekerjaan tidak macet;
-    // duplikat tetap akan ditolak ulang oleh server saat disimpan.
-    triggerFlash('ok');
-    playBeep();
-    if(cfg.mode === 'INBOUND'){
-      captureAndSendDirect(text);
-    } else {
-      captureFullFrame(text);
-    }
-  });
-}
-
-async function checkDuplicateQr(qrText){
-  const url = cfg.scriptUrl + '?action=checkQr&date=' + encodeURIComponent(todayStr()) + '&qr=' + encodeURIComponent(qrText) + '&mode=' + encodeURIComponent(cfg.mode);
-  const res = await fetch(url);
-  const data = await res.json();
-  if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memeriksa duplikat'); }
-  return !!data.exists;
+  // TIDAK menunggu server di sini lagi — langsung potret. Validasi duplikat
+  // tetap dijalankan server saat data ini benar-benar dikirim untuk disimpan
+  // (lihat captureAndSendDirect / tombol Simpan), jadi tidak ada bolak-balik
+  // jaringan ekstra sebelum foto diambil.
+  triggerFlash('ok');
+  playBeep();
+  if(cfg.mode === 'INBOUND'){
+    captureAndSendDirect(text);
+  } else {
+    captureFullFrame(text);
+  }
 }
 
 /* Alur INBOUND: tanpa review, tanpa koli/kilo/BIG, langsung kirim */
