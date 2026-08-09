@@ -464,11 +464,11 @@ async function startCamera(){
     scanHint.textContent = 'Kamera aktif — mencari QR code…';
     tick();
 
-    // sinkron cache lokal di latar belakang tiap 20 detik — supaya QR yang baru
-    // discan dari HP lain ikut diketahui, tanpa menunda proses scan di HP ini
+    // sinkron cache lokal di latar belakang tiap 6 detik — supaya QR yang baru
+    // discan/dihapus dari HP lain cepat diketahui, tanpa menunda proses scan di HP ini
     syncKnownScannedFromServer();
     if(syncIntervalId) clearInterval(syncIntervalId);
-    syncIntervalId = setInterval(syncKnownScannedFromServer, 20000);
+    syncIntervalId = setInterval(syncKnownScannedFromServer, 6000);
   }catch(err){
     setStatus('Tidak bisa akses kamera: ' + err.message, true);
   }
@@ -484,7 +484,7 @@ function stopCamera(){
   scanHint.textContent = '';
 }
 
-/** Ambil daftar QR yang sudah tercatat hari ini dari server (cepat, dari cache) dan gabungkan ke cache lokal */
+/** Samakan cache lokal persis dengan daftar QR di server (cepat, dari cache server) — mencakup penambahan MAUPUN penghapusan dari HP lain */
 async function syncKnownScannedFromServer(){
   if(!cfg.scriptUrl) return;
   resetKnownScannedIfNewDay();
@@ -493,10 +493,10 @@ async function syncKnownScannedFromServer(){
     const res = await fetch(url);
     const data = await res.json();
     if(data.status === 'ok' && Array.isArray(data.list)){
-      data.list.forEach(qr => knownScannedToday.add(qr));
+      knownScannedToday = new Set(data.list);
     }
   }catch(err){
-    // gagal sinkron, tidak apa — akan dicoba lagi 20 detik berikutnya
+    // gagal sinkron (mis. jaringan) -> cache lama tetap dipakai sementara, dicoba lagi beberapa detik berikutnya
   }
 }
 
