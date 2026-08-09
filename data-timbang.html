@@ -496,16 +496,41 @@ function tick(){
   rafId = requestAnimationFrame(tick);
 }
 
+// cache lokal: QR yang sudah diketahui pernah tercatat hari ini (dari server ATAU dari
+// sesi ini sendiri) — supaya rescan berikutnya untuk kode yang SAMA langsung ditolak
+// instan tanpa perlu tanya ke server lagi.
+let knownScannedToday = new Set();
+let knownScannedTodayDate = todayStr();
+
+function resetKnownScannedIfNewDay(){
+  const t = todayStr();
+  if(t !== knownScannedTodayDate){
+    knownScannedTodayDate = t;
+    knownScannedToday.clear();
+  }
+}
+
 function handleDetectedCode(text){
   const now = Date.now();
   if(text === lastCode && (now - lastCodeTime) < REPEAT_COOLDOWN_MS) return;
   lastCode = text;
   lastCodeTime = now;
 
-  // cek dulu apakah QR ini sudah discan hari ini (berlaku untuk OUTBOND maupun INBOUND)
+  resetKnownScannedIfNewDay();
+
+  // sudah diketahui duplikat dari cache lokal -> tolak seketika, tanpa ke server
+  if(knownScannedToday.has(text)){
+    triggerFlash('reject');
+    playReject();
+    scanHint.textContent = 'QR ini sudah discan hari ini — ditolak. Arahkan ke QR lain.';
+    return;
+  }
+
+  // cek ke server (dipercepat lewat cache di sisi Apps Script)
   scanHint.textContent = 'Memeriksa QR…';
   checkDuplicateQr(text).then(exists => {
     if(exists){
+      knownScannedToday.add(text);
       triggerFlash('reject');
       playReject();
       scanHint.textContent = 'QR ini sudah discan hari ini — ditolak. Arahkan ke QR lain.';
@@ -558,6 +583,7 @@ function captureAndSendDirect(qrText){
       };
       if(blob){ payload.image = await blobToBase64(blob); }
       await sendToAppsScript(payload);
+      if(qrText) knownScannedToday.add(qrText);
       updateLogEntry(entryId, 'up', 'Tersimpan');
     }catch(err){
       updateLogEntry(entryId, 'fail', err.message || 'Gagal mengirim');
@@ -679,6 +705,7 @@ document.getElementById('review-save').addEventListener('click', async () => {
       if(blob){ payload.image = await blobToBase64(blob); }
     }
     const data = await sendToAppsScript(payload);
+    if(qrText) knownScannedToday.add(qrText);
     updateLogEntry(entryId, 'up', 'Tersimpan');
     refreshSummary();
     loadSavedList();
@@ -1019,9 +1046,20 @@ async function loadSavedList(){
       savedItemsAll = data.items || [];
     }
     renderSavedFiltered();
+    primeKnownScannedFromSavedItems(date);
   }catch(err){
     savedEmpty.textContent = 'Gagal memuat: ' + err.message;
   }
+}
+
+/** Isi cache lokal "sudah discan hari ini" dari daftar Data Tersimpan, kalau tanggalnya hari ini */
+function primeKnownScannedFromSavedItems(dateOfItems){
+  if(dateOfItems !== todayStr()) return;
+  resetKnownScannedIfNewDay();
+  savedItemsAll.forEach(item => {
+    const text = (cfg.mode === 'INBOUND') ? null : item.qrText; // nama file INBOUND sudah disanitasi, tidak selalu sama persis dgn teks QR asli
+    if(text) knownScannedToday.add(text);
+  });
 }
 
 function searchableText(item){
