@@ -134,10 +134,6 @@
       <summary>Pengaturan (isi sekali saja)</summary>
       <div style="margin-top:10px;">
         <div class="field">
-          <label>URL Web App Apps Script</label>
-          <input type="text" id="cfg-script-url" placeholder="https://script.google.com/macros/s/xxxx/exec">
-        </div>
-        <div class="field">
           <label>Mode</label>
           <select id="cfg-mode">
             <option value="">— Pilih mode —</option>
@@ -154,7 +150,7 @@
         <div class="row">
           <button class="btn-secondary" id="save-cfg">Simpan pengaturan</button>
         </div>
-        <p class="hint">Tempel URL "Web app" hasil Deploy dari Apps Script. Mode &amp; Sub-Kategori cukup dipilih sekali — tetap tersimpan sampai Anda ubah sendiri. Disimpan di browser perangkat ini saja (localStorage). Aplikasi ini tidak butuh login — semua data langsung tersambung ke Drive (dan Sheet, khusus OUTBOND) yang sama untuk semua pengguna.</p>
+        <p class="hint">Mode &amp; Sub-Kategori cukup dipilih sekali — tetap tersimpan di HP ini sampai Anda ubah sendiri. Aplikasi ini tidak butuh login — semua data langsung tersambung ke Drive (dan Sheet, khusus OUTBOND) yang sama untuk semua pengguna.</p>
       </div>
     </details>
     <div class="active-context" id="active-context"></div>
@@ -273,19 +269,23 @@ function setStatus(text, isError){
    ============================================================ */
 const REPEAT_COOLDOWN_MS = 4000;
 
+// URL Web App Apps Script sudah ditanam langsung di sini — pengguna TIDAK perlu
+// mengisi apa pun untuk ini. Kalau suatu saat proyek Apps Script di-deploy ulang
+// dengan URL baru, cukup ganti nilai ini sekali di file HTML-nya.
+const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby-Y83rxf4SSUEK5lOLUbmzY4PlA6A-h1UozmZjH9Y2O6lB8m-hdDKgk-P10ecT879o/exec';
+
 const SUBKATEGORI_OPTIONS = {
   OUTBOND: ['SAMEDAY', 'VAN', 'MALAM'],
   INBOUND: ['VAN', 'MALAM']
 };
 
 let cfg = {
-  scriptUrl: localStorage.getItem('dt_script_url') || '',
+  scriptUrl: DEFAULT_SCRIPT_URL,
   mode: localStorage.getItem('dt_mode') || '',
   subkategori: ''
 };
 cfg.subkategori = cfg.mode ? (localStorage.getItem('dt_subkategori_' + cfg.mode) || '') : '';
 
-document.getElementById('cfg-script-url').value = cfg.scriptUrl;
 document.getElementById('cfg-mode').value = cfg.mode;
 populateSubkategoriOptions(cfg.mode, cfg.subkategori);
 refreshReadyState();
@@ -318,21 +318,14 @@ document.getElementById('cfg-mode').addEventListener('change', () => {
 
 document.getElementById('save-cfg').addEventListener('click', () => {
   try{
-    const val = document.getElementById('cfg-script-url').value.trim();
     const mode = document.getElementById('cfg-mode').value;
     const subkategori = document.getElementById('cfg-subkategori').value;
 
-    if(!val){ setStatus('Isi dulu URL-nya', true); return; }
-    if(!val.startsWith('https://script.google.com/')){
-      setStatus('URL sepertinya bukan URL Apps Script', true); return;
-    }
     if(!mode){ setStatus('Pilih Mode dulu (OUTBOND/INBOUND)', true); return; }
     if(!subkategori){ setStatus('Pilih Sub-Kategori dulu', true); return; }
 
-    cfg.scriptUrl = val;
     cfg.mode = mode;
     cfg.subkategori = subkategori;
-    localStorage.setItem('dt_script_url', cfg.scriptUrl);
     localStorage.setItem('dt_mode', cfg.mode);
     localStorage.setItem('dt_subkategori_' + cfg.mode, cfg.subkategori);
 
@@ -943,8 +936,8 @@ function renderSummary(data){
   }).join('');
 }
 
-// muat data awal kalau sudah pernah diatur sebelumnya
-if(cfg.scriptUrl){
+// muat data awal kalau Mode & Sub-Kategori sudah pernah dipilih sebelumnya di HP ini
+if(cfg.scriptUrl && cfg.mode && cfg.subkategori){
   if(cfg.mode === 'OUTBOND'){
     loadDatesList();
     refreshSummary();
