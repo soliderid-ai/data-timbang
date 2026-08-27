@@ -382,7 +382,7 @@ const scanHint = document.getElementById('scan-hint');
 
 // canvas kecil khusus untuk pemindaian QR — jauh lebih ringan/cepat
 // daripada memindai di resolusi penuh setiap frame.
-const SCAN_MAX_WIDTH = 480;
+const SCAN_MAX_WIDTH = 400;
 const scanCanvas = document.createElement('canvas');
 const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
 let scanScaleReady = false;
@@ -445,7 +445,7 @@ async function startCamera(){
   ensureAudio(); // dibuat saat ini juga (dipicu oleh tap pengguna) supaya suara diizinkan browser
   try{
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width:{ideal:1280}, height:{ideal:1280} },
+      video: { facingMode: 'environment', width:{ideal:960}, height:{ideal:960} },
       audio: false
     });
     video.srcObject = stream;
@@ -493,6 +493,12 @@ async function syncKnownScannedFromServer(){
   }
 }
 
+// Pemindaian QR TIDAK perlu dijalankan di setiap frame kamera (30-60x/detik) —
+// itu yang membuat HP terasa berat/panas. ~8x per detik (setiap 120ms) sudah lebih
+// dari cukup responsif untuk mata manusia, tapi bebannya jauh lebih ringan.
+const SCAN_INTERVAL_MS = 120;
+let lastScanAttempt = 0;
+
 function tick(){
   if(!scanning) return;
   if(video.readyState === video.HAVE_ENOUGH_DATA){
@@ -502,7 +508,9 @@ function tick(){
       scanCanvas.height = Math.round(video.videoHeight * scale);
       scanScaleReady = true;
     }
-    if(!reviewOpen && scanScaleReady){
+    const now = performance.now();
+    if(!reviewOpen && scanScaleReady && (now - lastScanAttempt) >= SCAN_INTERVAL_MS){
+      lastScanAttempt = now;
       scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
       const imgData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
       const result = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
