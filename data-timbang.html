@@ -414,12 +414,12 @@ function playBeep(){
     osc.type = 'sine';
     osc.frequency.value = 1046; // nada "ting" pendek
     gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.25, audioCtx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.14);
+    gain.gain.exponentialRampToValueAtTime(0.6, audioCtx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.16);
     osc.connect(gain);
     gain.connect(audioCtx.destination);
     osc.start();
-    osc.stop(audioCtx.currentTime + 0.15);
+    osc.stop(audioCtx.currentTime + 0.17);
   }catch(e){ /* abaikan kalau gagal, tidak fatal */ }
 }
 
@@ -431,12 +431,33 @@ function playReject(){
     osc.type = 'square';
     osc.frequency.value = 220; // nada rendah "buzz" pendek, beda dari nada sukses
     gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.2, audioCtx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.22);
+    gain.gain.exponentialRampToValueAtTime(0.55, audioCtx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.24);
     osc.connect(gain);
     gain.connect(audioCtx.destination);
     osc.start();
-    osc.stop(audioCtx.currentTime + 0.23);
+    osc.stop(audioCtx.currentTime + 0.25);
+  }catch(e){ /* abaikan */ }
+}
+
+/** Suara khusus untuk ambil foto manual (tanpa QR) — dua nada pendek berurutan, cukup lantang, mudah dibedakan dari bunyi scan otomatis */
+function playManual(){
+  if(!audioCtx) return;
+  try{
+    const t0 = audioCtx.currentTime;
+    [[880, t0], [1318, t0 + 0.1]].forEach(([freq, startTime]) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.6, startTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.12);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + 0.13);
+    });
   }catch(e){ /* abaikan */ }
 }
 let syncIntervalId = null;
@@ -654,6 +675,9 @@ const reviewThumb = document.getElementById('review-thumb');
 
 document.getElementById('btn-manual').addEventListener('click', () => {
   if(cfg.mode === 'INBOUND'){
+    // ambil foto langsung tanpa QR -> beri notifikasi kedipan + suara
+    triggerFlash('ok');
+    playManual();
     captureAndSendDirect(''); // tanpa QR, nama file otomatis pakai penanda "manual"
   } else {
     pendingBlobPromise = null;
@@ -664,6 +688,8 @@ document.getElementById('btn-manual').addEventListener('click', () => {
 document.getElementById('btn-manual-photo').addEventListener('click', () => {
   // khusus OUTBOND: ambil foto dari frame kamera saat ini tanpa QR,
   // tetap lewat review supaya bisa isi koli/kilo/BIG
+  triggerFlash('ok');
+  playManual();
   captureFullFrame('');
 });
 
