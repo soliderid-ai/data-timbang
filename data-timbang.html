@@ -406,58 +406,62 @@ function ensureAudio(){
   }catch(e){ /* browser tidak mendukung, abaikan */ }
 }
 
+// Compressor bersama: menahan puncak suara supaya walau volume dikeraskan jauh,
+// hasilnya tetap bersih (tidak pecah/serak) di speaker HP.
+let masterCompressor = null;
+function getMasterOutput(){
+  if(!masterCompressor){
+    masterCompressor = audioCtx.createDynamicsCompressor();
+    masterCompressor.threshold.value = -10;
+    masterCompressor.knee.value = 6;
+    masterCompressor.ratio.value = 12;
+    masterCompressor.attack.value = 0.002;
+    masterCompressor.release.value = 0.12;
+    masterCompressor.connect(audioCtx.destination);
+  }
+  return masterCompressor;
+}
+
+function playTone(freq, startTime, duration, gainPeak, type){
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0.0001, startTime);
+  gain.gain.exponentialRampToValueAtTime(gainPeak, startTime + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+  osc.connect(gain);
+  gain.connect(getMasterOutput());
+  osc.start(startTime);
+  osc.stop(startTime + duration + 0.02);
+}
+
 function playBeep(){
   if(!audioCtx) return;
   try{
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = 1046; // nada "ting" pendek
-    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.6, audioCtx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.16);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.start();
-    osc.stop(audioCtx.currentTime + 0.17);
+    const t0 = audioCtx.currentTime;
+    // nada utama + lapisan satu oktaf di atasnya supaya terasa lebih tebal & lantang
+    playTone(1046, t0, 0.18, 1.1, 'sine');
+    playTone(2092, t0, 0.14, 0.5, 'sine');
   }catch(e){ /* abaikan kalau gagal, tidak fatal */ }
 }
 
 function playReject(){
   if(!audioCtx) return;
   try{
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'square';
-    osc.frequency.value = 220; // nada rendah "buzz" pendek, beda dari nada sukses
-    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.55, audioCtx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.24);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.start();
-    osc.stop(audioCtx.currentTime + 0.25);
+    const t0 = audioCtx.currentTime;
+    playTone(220, t0, 0.26, 1.1, 'square');
+    playTone(110, t0, 0.26, 0.6, 'square');
   }catch(e){ /* abaikan */ }
 }
 
-/** Suara khusus untuk ambil foto manual (tanpa QR) — dua nada pendek berurutan, cukup lantang, mudah dibedakan dari bunyi scan otomatis */
+/** Suara khusus untuk ambil foto manual (tanpa QR) — dua nada pendek berurutan, lantang, mudah dibedakan dari bunyi scan otomatis */
 function playManual(){
   if(!audioCtx) return;
   try{
     const t0 = audioCtx.currentTime;
-    [[880, t0], [1318, t0 + 0.1]].forEach(([freq, startTime]) => {
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.0001, startTime);
-      gain.gain.exponentialRampToValueAtTime(0.6, startTime + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.12);
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start(startTime);
-      osc.stop(startTime + 0.13);
-    });
+    playTone(880, t0, 0.14, 1.1, 'sine');
+    playTone(1318, t0 + 0.1, 0.14, 1.1, 'sine');
   }catch(e){ /* abaikan */ }
 }
 let syncIntervalId = null;
