@@ -49,7 +49,7 @@
     border-radius:10px;overflow:hidden;
   }
   video{width:100%;height:100%;object-fit:cover;display:block;}
-  #reticle{position:absolute;inset:14%;border:2px solid rgba(255,255,255,0.55);border-radius:12px;pointer-events:none;}
+  #reticle{position:absolute;inset:33%;border:2px solid rgba(255,255,255,0.55);border-radius:12px;pointer-events:none;}
   #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;}
   #flash.on{animation:flashfx 260ms ease-out;}
   #flash.reject{background:#c0392b;animation:flashfx 320ms ease-out;}
@@ -167,6 +167,7 @@
     <div class="row" style="margin-top:10px;">
       <button class="btn-primary" id="btn-start" disabled>Mulai Kamera</button>
       <button class="btn-secondary" id="btn-stop" style="display:none;">Hentikan Kamera</button>
+      <button class="btn-secondary" id="btn-torch" style="display:none;">💡 Senter</button>
       <button class="btn-secondary" id="btn-manual" disabled>+ Input Manual</button>
       <button class="btn-secondary" id="btn-manual-photo" disabled style="display:none;">Ambil Foto (tanpa QR)</button>
     </div>
@@ -395,6 +396,8 @@ let lastCodeTime = 0;
 let reviewOpen = false;
 let pendingBlobPromise = null;
 let audioCtx = null;
+let currentTrack = null; // video track kamera aktif, dipakai untuk kontrol senter
+let torchOn = false;
 
 document.getElementById('btn-start').addEventListener('click', startCamera);
 document.getElementById('btn-stop').addEventListener('click', stopCamera);
@@ -482,6 +485,8 @@ async function startCamera(){
     scanHint.textContent = 'Kamera aktif — mencari QR code…';
     tick();
 
+    setupTorchButton();
+
     // sinkron cache lokal di latar belakang tiap 6 detik — supaya QR yang baru
     // discan/dihapus dari HP lain cepat diketahui, tanpa menunda proses scan di HP ini
     syncKnownScannedFromServer();
@@ -495,12 +500,45 @@ async function startCamera(){
 function stopCamera(){
   scanning = false;
   if(rafId) cancelAnimationFrame(rafId);
+  if(currentTrack && torchOn){
+    try{ currentTrack.applyConstraints({ advanced: [{ torch: false }] }); }catch(e){ /* abaikan */ }
+  }
   if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  currentTrack = null;
+  torchOn = false;
+  document.getElementById('btn-torch').style.display = 'none';
+  document.getElementById('btn-torch').textContent = '💡 Senter';
   if(syncIntervalId){ clearInterval(syncIntervalId); syncIntervalId = null; }
   document.getElementById('btn-start').style.display='inline-block';
   document.getElementById('btn-stop').style.display='none';
   scanHint.textContent = '';
 }
+
+/** Cek apakah kamera aktif mendukung senter (torch); kalau ya, tampilkan tombolnya */
+function setupTorchButton(){
+  currentTrack = stream ? stream.getVideoTracks()[0] : null;
+  torchOn = false;
+  const btnTorch = document.getElementById('btn-torch');
+  btnTorch.textContent = '💡 Senter';
+  let supported = false;
+  try{
+    const caps = currentTrack && currentTrack.getCapabilities ? currentTrack.getCapabilities() : {};
+    supported = !!caps.torch;
+  }catch(e){ supported = false; }
+  btnTorch.style.display = supported ? 'inline-block' : 'none';
+}
+
+document.getElementById('btn-torch').addEventListener('click', async () => {
+  if(!currentTrack) return;
+  const next = !torchOn;
+  try{
+    await currentTrack.applyConstraints({ advanced: [{ torch: next }] });
+    torchOn = next;
+    document.getElementById('btn-torch').textContent = torchOn ? '💡 Senter (Matikan)' : '💡 Senter';
+  }catch(err){
+    alert('Senter tidak didukung di perangkat/browser ini.');
+  }
+});
 
 /** Samakan cache lokal persis dengan daftar QR di server (cepat, dari cache server) — mencakup penambahan MAUPUN penghapusan dari HP lain */
 async function syncKnownScannedFromServer(){
@@ -524,6 +562,13 @@ async function syncKnownScannedFromServer(){
 const SCAN_INTERVAL_MS = 120;
 let lastScanAttempt = 0;
 
+// Zoom digital khusus untuk pencarian QR: hanya bagian tengah frame yang diproses,
+// diperbesar setara 3x (memotong 1/3 area tengah lalu direnggangkan memenuhi
+// scanCanvas). Foto yang disimpan (captureFullFrame/captureAndSendDirect) TIDAK
+// memakai zoom ini — tetap memotret frame penuh (1x), jadi keduanya berjalan dari
+// video yang sama tanpa kamera perlu berpindah zoom.
+const SCAN_ZOOM_FACTOR = 3;
+
 function tick(){
   if(!scanning) return;
   if(video.readyState === video.HAVE_ENOUGH_DATA){
@@ -536,7 +581,11 @@ function tick(){
     const now = performance.now();
     if(!reviewOpen && scanScaleReady && (now - lastScanAttempt) >= SCAN_INTERVAL_MS){
       lastScanAttempt = now;
-      scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
+      const cropW = video.videoWidth / SCAN_ZOOM_FACTOR;
+      const cropH = video.videoHeight / SCAN_ZOOM_FACTOR;
+      const cropX = (video.videoWidth - cropW) / 2;
+      const cropY = (video.videoHeight - cropH) / 2;
+      scanCtx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, scanCanvas.width, scanCanvas.height);
       const imgData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
       const result = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
       if(result && result.data){
