@@ -170,6 +170,7 @@
       <button class="btn-secondary" id="btn-torch" style="display:none;">💡 Senter</button>
       <button class="btn-secondary" id="btn-manual" disabled>+ Input Manual</button>
       <button class="btn-secondary" id="btn-manual-photo" disabled style="display:none;">Ambil Foto (tanpa QR)</button>
+      <button class="btn-primary" id="btn-hvs-photo" disabled style="display:none;">📷 Ambil Foto (HVS)</button>
     </div>
     <p class="hint" id="scan-hint" style="margin-top:8px;"></p>
   </div>
@@ -276,9 +277,16 @@ const REPEAT_COOLDOWN_MS = 4000;
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby-Y83rxf4SSUEK5lOLUbmzY4PlA6A-h1UozmZjH9Y2O6lB8m-hdDKgk-P10ecT879o/exec';
 
 const SUBKATEGORI_OPTIONS = {
-  OUTBOND: ['SAMEDAY', 'VAN', 'MALAM'],
-  INBOUND: ['VAN', 'MALAM']
+  OUTBOND: ['SAMEDAY', 'VAN', 'MALAM', 'HVS'],
+  INBOUND: ['VAN', 'MALAM', 'HVS']
 };
+
+// HVS: sub-kategori khusus di kedua mode — HANYA boleh ambil foto,
+// tidak ada scan QR (pemindaian dimatikan total) dan tidak ada input
+// data lain (koli/kilo/BIG ikut disembunyikan meski mode-nya OUTBOND).
+function isHvsSubkategori(){
+  return cfg.subkategori === 'HVS';
+}
 
 let cfg = {
   scriptUrl: DEFAULT_SCRIPT_URL,
@@ -350,6 +358,7 @@ function refreshReadyState(){
     document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-manual').disabled = false;
     document.getElementById('btn-manual-photo').disabled = false;
+    document.getElementById('btn-hvs-photo').disabled = false;
     setStatus('Siap dipakai ✓', false);
     ctxEl.innerHTML = '<span>Mode: <b>' + escapeHtml(cfg.mode) + '</b></span><span>· Sub-Kategori: <b>' + escapeHtml(cfg.subkategori) + '</b></span>';
   } else {
@@ -357,6 +366,7 @@ function refreshReadyState(){
     document.getElementById('btn-start').disabled = true;
     document.getElementById('btn-manual').disabled = true;
     document.getElementById('btn-manual-photo').disabled = true;
+    document.getElementById('btn-hvs-photo').disabled = true;
     setStatus('Belum diatur', true);
     ctxEl.innerHTML = '';
   }
@@ -364,12 +374,23 @@ function refreshReadyState(){
 
 function applyModeUI(){
   const isInbound = cfg.mode === 'INBOUND';
+  const isHvs = isHvsSubkategori();
+
+  // HVS: sembunyikan semua tombol input QR/data, tampilkan hanya "Ambil Foto (HVS)"
+  document.getElementById('btn-manual').style.display = isHvs ? 'none' : 'inline-block';
+  document.getElementById('btn-manual-photo').style.display = (isHvs || isInbound) ? 'none' : 'inline-block';
+  document.getElementById('btn-hvs-photo').style.display = isHvs ? 'inline-block' : 'none';
+
   document.getElementById('btn-manual').textContent = isInbound ? 'Ambil Foto Manual (tanpa QR)' : '+ Input Manual (tanpa foto)';
-  document.getElementById('btn-manual-photo').style.display = isInbound ? 'none' : 'inline-block';
-  document.getElementById('summary-card').style.display = isInbound ? 'none' : 'block';
-  document.getElementById('saved-hint').textContent = isInbound
+
+  document.getElementById('summary-card').style.display = (isInbound || isHvs) ? 'none' : 'block';
+  document.getElementById('saved-hint').textContent = (isInbound || isHvs)
     ? 'Menampilkan foto pada tanggal & sub-kategori (' + cfg.subkategori + ') yang aktif. Menghapus di sini akan menghapus foto di Drive secara permanen.'
     : 'Menampilkan data pada tanggal yang dipilih. Menghapus di sini akan menghapus baris di Sheet dan foto di Drive secara permanen.';
+
+  scanHint.textContent = isHvs
+    ? 'Mode HVS — tanpa scan QR. Tekan "Ambil Foto (HVS)" untuk memotret.'
+    : (scanning ? 'Kamera aktif — mencari QR code…' : '');
 }
 
 /* ============================================================
@@ -579,7 +600,9 @@ function tick(){
       scanScaleReady = true;
     }
     const now = performance.now();
-    if(!reviewOpen && scanScaleReady && (now - lastScanAttempt) >= SCAN_INTERVAL_MS){
+    // HVS: kamera tetap menyala untuk preview, tapi pemindaian QR dimatikan total —
+    // pengambilan foto di sub-kategori ini murni manual lewat tombol.
+    if(!isHvsSubkategori() && !reviewOpen && scanScaleReady && (now - lastScanAttempt) >= SCAN_INTERVAL_MS){
       lastScanAttempt = now;
       const cropW = video.videoWidth / SCAN_ZOOM_FACTOR;
       const cropH = video.videoHeight / SCAN_ZOOM_FACTOR;
@@ -739,11 +762,19 @@ document.getElementById('btn-manual').addEventListener('click', () => {
 });
 
 document.getElementById('btn-manual-photo').addEventListener('click', () => {
-  // khusus OUTBOND: ambil foto dari frame kamera saat ini tanpa QR,
+  // khusus OUTBOND (non-HVS): ambil foto dari frame kamera saat ini tanpa QR,
   // tetap lewat review supaya bisa isi koli/kilo/BIG
   triggerFlash('ok');
   playManual();
   captureFullFrame('');
+});
+
+document.getElementById('btn-hvs-photo').addEventListener('click', () => {
+  // Sub-kategori HVS: langsung ambil foto & kirim, tanpa QR, tanpa review,
+  // tanpa koli/kilo/BIG — berlaku sama baik mode OUTBOND maupun INBOUND.
+  triggerFlash('ok');
+  playManual();
+  captureAndSendDirect('');
 });
 
 function openReview(qrText, thumbUrl){
