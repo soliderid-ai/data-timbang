@@ -267,6 +267,21 @@ function setStatus(text, isError){
 }
 
 /* ============================================================
+   STATE KAMERA (dideklarasikan di awal karena dipakai fungsi-fungsi
+   Pengaturan seperti applyModeUI() yang berjalan sejak halaman dimuat)
+   ============================================================ */
+let stream = null;
+let scanning = false;
+let rafId = null;
+let lastCode = null;
+let lastCodeTime = 0;
+let reviewOpen = false;
+let pendingBlobPromise = null;
+let audioCtx = null;
+let currentTrack = null; // video track kamera aktif, dipakai untuk kontrol senter
+let torchOn = false;
+
+/* ============================================================
    KONFIGURASI DASAR
    ============================================================ */
 const REPEAT_COOLDOWN_MS = 4000;
@@ -388,7 +403,7 @@ function applyModeUI(){
     ? 'Menampilkan foto pada tanggal & sub-kategori (' + cfg.subkategori + ') yang aktif. Menghapus di sini akan menghapus foto di Drive secara permanen.'
     : 'Menampilkan data pada tanggal yang dipilih. Menghapus di sini akan menghapus baris di Sheet dan foto di Drive secara permanen.';
 
-  scanHint.textContent = isHvs
+  document.getElementById('scan-hint').textContent = isHvs
     ? 'Mode HVS — tanpa scan QR. Tekan "Ambil Foto (HVS)" untuk memotret.'
     : (scanning ? 'Kamera aktif — mencari QR code…' : '');
 }
@@ -408,17 +423,6 @@ const SCAN_MAX_WIDTH = 400;
 const scanCanvas = document.createElement('canvas');
 const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
 let scanScaleReady = false;
-
-let stream = null;
-let scanning = false;
-let rafId = null;
-let lastCode = null;
-let lastCodeTime = 0;
-let reviewOpen = false;
-let pendingBlobPromise = null;
-let audioCtx = null;
-let currentTrack = null; // video track kamera aktif, dipakai untuk kontrol senter
-let torchOn = false;
 
 document.getElementById('btn-start').addEventListener('click', startCamera);
 document.getElementById('btn-stop').addEventListener('click', stopCamera);
