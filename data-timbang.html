@@ -497,8 +497,12 @@ let syncIntervalId = null;
 async function startCamera(){
   ensureAudio(); // dibuat saat ini juga (dipicu oleh tap pengguna) supaya suara diizinkan browser
   try{
+    // FORM HVS tidak melakukan scan QR sama sekali (lihat tick()), jadi tidak ada
+    // beban pemindaian yang perlu dijaga ringan — kamera boleh dinaikkan ke resolusi
+    // tinggi supaya tulisan pada dokumen tetap terbaca jelas di hasil fotonya.
+    const targetRes = isHvsSubkategori() ? 2560 : 960;
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width:{ideal:960}, height:{ideal:960} },
+      video: { facingMode: 'environment', width:{ideal:targetRes}, height:{ideal:targetRes} },
       audio: false
     });
     video.srcObject = stream;
@@ -694,6 +698,8 @@ function captureAndSendDirect(qrText){
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
   const entryId = addLogEntry(qrText, '', '', false, 'pending');
+  // FORM HVS: kualitas JPEG dinaikkan supaya detail tulisan dokumen tidak buram akibat kompresi
+  const jpegQuality = isHvsSubkategori() ? 0.94 : 0.85;
 
   canvas.toBlob(async (blob) => {
     try{
@@ -711,7 +717,7 @@ function captureAndSendDirect(qrText){
     }catch(err){
       updateLogEntry(entryId, 'fail', err.message || 'Gagal mengirim');
     }
-  }, 'image/jpeg', 0.85);
+  }, 'image/jpeg', jpegQuality);
 }
 
 function captureFullFrame(qrText){
