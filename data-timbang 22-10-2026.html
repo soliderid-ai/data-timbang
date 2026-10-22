@@ -295,6 +295,26 @@ let pendingUploads = 0; // jumlah foto/data yang masih dalam proses unggah
 
 // Selama ada unggahan berjalan: tampilkan spanduk peringatan dan minta konfirmasi
 // kalau tab/aplikasi hendak ditutup, supaya data terunggah sempurna.
+/**
+ * Baca balasan server sebagai JSON. Kalau Google mengirim halaman error HTML
+ * (beban/kuota Apps Script penuh, deploy belum diperbarui, izin belum diberikan),
+ * tampilkan pesan yang jelas — bukan sekadar "JSON tidak terbaca".
+ */
+async function readJsonResponse(res){
+  const text = await res.text();
+  try{
+    return JSON.parse(text);
+  }catch(e){
+    let msg = 'Balasan server bukan JSON';
+    if(/<html|<!doctype/i.test(text)){
+      const t = text.match(/<title>([^<]*)<\/title>/i);
+      msg += ' (halaman error dari Google' + (t && t[1].trim() ? ': ' + t[1].trim() : '') + ')';
+    }
+    msg += '. Kemungkinan: beban/kuota Apps Script sedang penuh, deploy belum diperbarui, atau izin belum diberikan.';
+    throw new Error(msg);
+  }
+}
+
 function updateUploadBanner(){
   const banner = document.getElementById('upload-banner');
   if(!banner) return;
@@ -612,11 +632,14 @@ document.getElementById('btn-torch').addEventListener('click', async () => {
 /** Samakan cache lokal persis dengan daftar QR di server (cepat, dari cache server) — mencakup penambahan MAUPUN penghapusan dari HP lain */
 async function syncKnownScannedFromServer(){
   if(!cfg.scriptUrl) return;
+  // hemat beban Apps Script: tidak perlu sinkron saat unggahan sedang berjalan
+  // atau saat tab/layar tidak terlihat (HP terkunci / pindah aplikasi)
+  if(pendingUploads > 0 || document.hidden) return;
   resetKnownScannedIfNewDay();
   try{
     const url = cfg.scriptUrl + '?action=qrList&date=' + encodeURIComponent(todayStr()) + '&mode=' + encodeURIComponent(cfg.mode);
     const res = await fetch(url);
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     if(data.status === 'ok' && Array.isArray(data.list)){
       knownScannedToday = new Set(data.list);
     }
@@ -918,7 +941,7 @@ async function sendToAppsScript(payload){
     body: JSON.stringify(payload)
   });
   if(!res.ok){ throw new Error('Server merespons status ' + res.status); }
-  const data = await res.json();
+  const data = await readJsonResponse(res);
   if(data.status !== 'ok'){ throw new Error(data.message || 'Apps Script melaporkan gagal'); }
   return data;
 }
@@ -1018,7 +1041,7 @@ async function loadDatesList(){
   if(!cfg.scriptUrl) return;
   try{
     const res = await fetch(cfg.scriptUrl + '?action=dates');
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     if(data.status === 'ok' && Array.isArray(data.dates)){
       const current = summaryDateSel.value || todayStr();
       summaryDateSel.innerHTML = '';
@@ -1046,7 +1069,7 @@ async function refreshSummary(){
   summaryBody.innerHTML = '<p class="hint">Memuat…</p>';
   try{
     const res = await fetch(cfg.scriptUrl + '?action=summary&date=' + encodeURIComponent(date));
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat ringkasan'); }
     renderSummary(data);
   }catch(err){
@@ -1183,7 +1206,7 @@ async function loadSavedDatesList(){
   const action = (cfg.mode === 'INBOUND') ? 'datesInbound' : 'dates';
   try{
     const res = await fetch(cfg.scriptUrl + '?action=' + action);
-    const data = await res.json();
+    const data = await readJsonResponse(res);
     if(data.status === 'ok' && Array.isArray(data.dates)){
       const current = savedDateSel.value || todayStr();
       savedDateSel.innerHTML = '';
@@ -1224,12 +1247,12 @@ async function loadSavedList(){
     if(cfg.mode === 'INBOUND'){
       if(!cfg.subkategori){ savedEmpty.textContent = 'Pilih Sub-Kategori dulu di Pengaturan.'; return; }
       const res = await fetch(cfg.scriptUrl + '?action=listInbound&date=' + encodeURIComponent(date) + '&subkategori=' + encodeURIComponent(cfg.subkategori));
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat data'); }
       savedItemsAll = data.items || [];
     } else {
       const res = await fetch(cfg.scriptUrl + '?action=list&date=' + encodeURIComponent(date));
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal memuat data'); }
       savedItemsAll = data.items || [];
     }
@@ -1455,7 +1478,7 @@ async function sendDeleteRequest(payload){
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify(payload)
   });
-  const data = await res.json();
+  const data = await readJsonResponse(res);
   if(data.status !== 'ok'){ throw new Error(data.message || 'Gagal menghapus'); }
   return data;
 }
